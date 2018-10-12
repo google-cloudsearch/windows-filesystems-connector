@@ -18,6 +18,7 @@ package com.google.enterprise.cloudsearch.fs;
 import static com.google.enterprise.cloudsearch.fs.AclView.GenericPermission;
 import static com.google.enterprise.cloudsearch.fs.AclView.group;
 import static com.google.enterprise.cloudsearch.fs.AclView.user;
+import static com.google.enterprise.cloudsearch.fs.FsRepository.ASYNC_PUSH_ITEMS_BATCH_SIZE;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.attribute.AclEntryFlag.DIRECTORY_INHERIT;
 import static java.nio.file.attribute.AclEntryFlag.FILE_INHERIT;
@@ -109,6 +110,7 @@ import org.junit.Test;
 import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.Mockito;
@@ -1924,6 +1926,218 @@ public class FsRepositoryTest {
     RepositoryDoc fileResult =
         getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
     assertEquals("presentation format", fileResult.getItem().getMetadata().getMimeType());
+  }
+
+  @Test
+  public void testGetDocLargeDirectoryBadDocId() throws Exception {
+    MockFile root = getShareRootDefaultAclViews("/");
+    for (int i = 0; i < 10; i++) {
+      root.addChildren(new MockFile(String.format("child%07d", i), false));
+    }
+    // Fail on one doc id in the list
+    MockFileDelegate delegate = new MockFileDelegate(root) {
+        @Override
+        public String newDocId(Path doc) throws IOException {
+          String badDocId = Paths.get("/child0000004").toString();
+          if (doc.toString().equals(badDocId)) {
+            throw new IOException("newDocId mock failure on " + badDocId);
+          }
+          return super.newDocId(doc);
+        }
+      };
+    String docId = delegate.newDocId(root);
+
+    Properties config = new Properties();
+    config.put("fs.largeDirectoryLimit", "1");
+    setConfig(root.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+    RepositoryDoc result =
+        getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
+
+    // All the children other than the one that failed should be sent.
+    PushItems.Builder expectedBuilder = new PushItems.Builder();
+    for (int i = 0; i < 10; i++) {
+      if (i != 4) {
+        expectedBuilder.addPushItem(
+            delegate.newDocId(Paths.get(String.format("/child%07d", i))), new PushItem());
+      }
+    }
+    PushItems expectedItems = expectedBuilder.build();
+
+    ArgumentCaptor<ApiOperation> c = ArgumentCaptor.forClass(ApiOperation.class);
+    Thread.sleep(2000); // Need to wait for the async thread to finish
+    verify(mockRepositoryContext).postApiOperationAsync(c.capture());
+    List<ApiOperation> values = c.getAllValues();
+    assertEquals(expectedItems, values.get(0));
+  }
+
+  @Test
+  public void testGetDocLargeDirectoryBadStream() throws Exception {
+    MockFile root = getShareRootDefaultAclViews("/");
+    for (int i = 0; i < 10; i++) {
+      root.addChildren(new MockFile(String.format("child%07d", i), false));
+    }
+    // Fail to read children.
+    MockFileDelegate delegate = new MockFileDelegate(root) {
+        int count = 0;
+        @Override
+        public DirectoryStream<Path> newDirectoryStream(Path doc) throws IOException {
+          // Called in init->validateShare, getDoc->validateShare, getDoc->getDirectoryContent
+          // before being called in async pusher.
+          if (count == 3) {
+            throw new IOException("newDirectoryStream mock failure");
+          }
+          count++;
+          return super.newDirectoryStream(doc);
+        }
+      };
+    String docId = delegate.newDocId(root);
+
+    Properties config = new Properties();
+    config.put("fs.largeDirectoryLimit", "1");
+    setConfig(root.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+    RepositoryDoc result =
+        getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
+
+    // largeDirectoryLimit children are sent in the RepositoryDoc, no children are sent
+    // asynchronously.
+    assertEquals(1, result.getChildIds().size());
+    verify(mockRepositoryContext, times(0)).postApiOperationAsync(any());
+  }
+
+  @Test
+  public void testGetDocLargeDirectoryLastAccessTimeRestoreFailed() throws Exception {
+    MockFile root = getShareRootDefaultAclViews("/");
+    for (int i = 0; i < 10; i++) {
+      root.addChildren(new MockFile(String.format("child%07d", i), false));
+    }
+    // Fail on one doc id in the list
+    MockFileDelegate delegate = new MockFileDelegate(root) {
+        int count = 0;
+        @Override
+        public void setLastAccessTime(Path doc, FileTime time) throws IOException {
+          // Called in getDirectoryContent as well as async pusher.
+          if (count == 1) {
+            throw new IOException("setLastAccessTime mock failure");
+          }
+          count++;
+          super.setLastAccessTime(doc, time);
+        }
+      };
+    String docId = delegate.newDocId(root);
+
+    Properties config = new Properties();
+    config.put("fs.largeDirectoryLimit", "1");
+    setConfig(root.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+    RepositoryDoc result =
+        getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
+
+    PushItems.Builder expectedBuilder = new PushItems.Builder();
+    for (int i = 0; i < 10; i++) {
+      expectedBuilder.addPushItem(
+          delegate.newDocId(Paths.get(String.format("/child%07d", i))), new PushItem());
+    }
+    PushItems expectedItems = expectedBuilder.build();
+
+    // All the children are pushed; the setLastAccessTime exception should be logged but
+    // not cause other issues.
+    ArgumentCaptor<ApiOperation> c = ArgumentCaptor.forClass(ApiOperation.class);
+    Thread.sleep(2000); // Need to wait for the async thread to finish
+    verify(mockRepositoryContext).postApiOperationAsync(c.capture());
+    List<ApiOperation> values = c.getAllValues();
+    assertEquals(expectedItems, values.get(0));
+  }
+
+  @Test
+  public void testGetDocLargeDirectoryFilesMultipleOfBatch() throws Exception {
+    int numChildren = (ASYNC_PUSH_ITEMS_BATCH_SIZE * 100);
+    verifyLargeDirectory(numChildren, /* largeDirectoryLimit */ 10);
+  }
+
+  @Test
+  public void testGetDocLargeDirectoryFilesNotMultipleOfBatch() throws Exception {
+    int numChildren = (ASYNC_PUSH_ITEMS_BATCH_SIZE * 100) + 1;
+    verifyLargeDirectory(numChildren, /* largeDirectoryLimit */ 10);
+  }
+
+  @Test
+  public void testGetDocLargeDirectoryFilesLessThanBatch() throws Exception {
+    int numChildren = ASYNC_PUSH_ITEMS_BATCH_SIZE - 1;
+    verifyLargeDirectory(numChildren, /* largeDirectoryLimit */ 1);
+  }
+
+  @Test
+  public void testGetDocLargeDirectorySendAllAsync() throws Exception {
+    int numChildren = ASYNC_PUSH_ITEMS_BATCH_SIZE - 1;
+    verifyLargeDirectory(numChildren, /* largeDirectoryLimit */ 0);
+  }
+
+  // This test compares a collection of expected children, with names generated in the
+  // test, to the collection created in the connector using a DirectoryStream. The
+  // MockFile implementation sorts the children when constructing the DirectoryStream, so
+  // use padding in the names so that our test data and the stream end up using the same
+  // order.
+  private void verifyLargeDirectory(int numChildren, int largeDirectoryLimit) throws Exception {
+    assertTrue("numChildren = 0", numChildren > 0);
+    int batchSize = ASYNC_PUSH_ITEMS_BATCH_SIZE;
+
+    MockFile root = getShareRootDefaultAclViews("/");
+    for (int i = 0; i < numChildren; i++) {
+      root.addChildren(new MockFile(String.format("child%07d", i), false));
+    }
+    MockFileDelegate delegate = new MockFileDelegate(root);
+    String docId = delegate.newDocId(root);
+
+    Properties config = new Properties();
+    config.put("fs.largeDirectoryLimit", String.valueOf(largeDirectoryLimit));
+    setConfig(root.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+    RepositoryDoc result =
+        getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
+
+    // Only largeDirectoryLimit children are sent in the RepositoryDoc
+    RepositoryDoc.Builder expectedDocBuilder = new RepositoryDoc.Builder()
+        .setItem(result.getItem()) // Avoid modeling the item; this test cares about the children
+        .setRequestMode(RequestMode.ASYNCHRONOUS);
+    for (int i = 0; i < largeDirectoryLimit; i++) {
+      expectedDocBuilder.addChildId(
+          delegate.newDocId(Paths.get(String.format("/child%07d", i))), new PushItem());
+    }
+    RepositoryDoc expectedDoc = expectedDocBuilder.build();
+
+    // All the children are sent asynchronously, but they're sent in multiple PushItems.
+    int numBatches = numChildren / batchSize;
+    int remainder = numChildren % batchSize;
+    List<PushItems> expectedBatches = new ArrayList<>(numBatches + 1);
+    PushItems.Builder batchBuilder = new PushItems.Builder();
+    for (int i = 1; i <= numChildren; i++) {
+      batchBuilder.addPushItem(
+          delegate.newDocId(Paths.get(String.format("/child%07d", (i - 1)))), new PushItem());
+      if ((i % batchSize) == 0) {
+        expectedBatches.add(batchBuilder.build());
+        batchBuilder = new PushItems.Builder();
+      }
+    }
+    if (remainder != 0) {
+        expectedBatches.add(batchBuilder.build());
+    }
+
+    assertEquals("repository docs differ", expectedDoc, result);
+    ArgumentCaptor<ApiOperation> c = ArgumentCaptor.forClass(ApiOperation.class);
+    Thread.sleep(2000); // Need to wait for the async thread to finish
+    verify(mockRepositoryContext, times(remainder > 0 ? numBatches + 1 : numBatches))
+        .postApiOperationAsync(c.capture());
+    List<ApiOperation> values = c.getAllValues();
+    assertEquals("number of batches differ", expectedBatches.size(), values.size());
+    for (int i = 0; i < expectedBatches.size(); i++) {
+      assertEquals("batch unequal at " + i, expectedBatches.get(i), values.get(i));
+    }
   }
 
   private static final AclFileAttributeView EMPTY_ACLVIEW = new AclView();

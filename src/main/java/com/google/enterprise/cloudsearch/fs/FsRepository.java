@@ -83,6 +83,8 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -246,6 +248,9 @@ public class FsRepository implements Repository {
   /** The config parameter name for the prefix for BUILTIN groups. */
   private static final String CONFIG_BUILTIN_PREFIX = "fs.builtinGroupPrefix";
 
+  /** The config parameter name for the directory size that triggers async processing. */
+  private static final String CONFIG_LARGE_DIRECTORY_LIMIT = "fs.largeDirectoryLimit";
+
   /** Properties filename to specify mime types. */
   private static final String MIME_TYPE_PROP_FILENAME = "mime-type.properties";
 
@@ -272,6 +277,9 @@ public class FsRepository implements Repository {
           "BUILTIN\\Guest",
           "NT AUTHORITY\\INTERACTIVE",
           "NT AUTHORITY\\Authenticated Users");
+
+  /** The number of items in a batch, when pushing directory contents asynchronously. */
+  @VisibleForTesting static final int ASYNC_PUSH_ITEMS_BATCH_SIZE = 100;
 
   /**
    * The set of Windows accounts that qualify for inclusion in an ACL
@@ -325,6 +333,11 @@ public class FsRepository implements Repository {
 
   /** Filter that may exclude files whose last access time is too old. */
   private FileTimeFilter lastAccessTimeFilter;
+
+  private int largeDirectoryLimit;
+
+  /** ExecutorService for asychronous pushing of large directory content. */
+  private ExecutorService asyncDirectoryPusherService;
 
   public FsRepository() {
     // We only support Windows.
@@ -438,6 +451,12 @@ public class FsRepository implements Repository {
 
     monitorForUpdates = Configuration.getBoolean(CONFIG_MONITOR_UPDATES, Boolean.TRUE).get();
     log.log(Level.CONFIG, "monitorForUpdates: {0}", monitorForUpdates);
+
+    largeDirectoryLimit = Configuration.getInteger(CONFIG_LARGE_DIRECTORY_LIMIT, 1000).get();
+    log.log(Level.CONFIG, "largeDirectoryLimit: {0}", largeDirectoryLimit);
+
+    // Service for pushing large directory contents asynchronously.
+    asyncDirectoryPusherService = Executors.newCachedThreadPool();
 
     // Verify that the startPaths are good.
     int validStartPaths = 0;
@@ -1036,7 +1055,12 @@ public class FsRepository implements Repository {
     } else {
       item.setItemType(ItemType.VIRTUAL_CONTAINER_ITEM.name());
     }
+    // Large directories can have tens or hundreds of thousands of files. The SDK
+    // enforces a time limit on calls to getDoc. If there are more items in the directory
+    // than the configured limit, stop at the limit and use a separate thread to send the
+    // complete contents.
     try (DirectoryStream<Path> files = delegate.newDirectoryStream(doc)) {
+      int children = 0;
       for (Path file : files) {
         String docId;
         try {
@@ -1045,10 +1069,65 @@ public class FsRepository implements Repository {
           log.log(Level.WARNING, "Skipping {0} because {1}.", new Object[] {file, e.getMessage()});
           continue;
         }
-        operationBuilder.addChildId(docId, new PushItem());
+        if (children++ < largeDirectoryLimit) {
+          operationBuilder.addChildId(docId, new PushItem());
+        } else {
+          log.log(Level.FINE, "Listing of children for {0} exceeds largeDirectoryLimit of {1}."
+              + " Switching to asynchronous feed of child IDs.",
+              new Object[] { doc, largeDirectoryLimit });
+          asyncDirectoryPusherService.submit(new AsyncDirectoryContentPusher(doc, lastAccessTime));
+          break;
+        }
       }
     } finally {
       setLastAccessTime(doc, lastAccessTime);
+    }
+  }
+
+  /* Pushes the directory's content. */
+  private class AsyncDirectoryContentPusher implements Runnable {
+    private final Path dir;
+    private final FileTime lastAccessTime;
+
+    public AsyncDirectoryContentPusher(Path dir, FileTime lastAccessTime) {
+      this.dir = dir;
+      this.lastAccessTime = lastAccessTime;
+    }
+
+    public void run() {
+      log.log(Level.FINE, "Pushing children of {0}", getFileName(dir));
+      try (DirectoryStream<Path> paths = delegate.newDirectoryStream(dir)) {
+        int count = 0;
+        PushItems.Builder builder = new PushItems.Builder();
+        for (Path path : paths) {
+          String docid;
+          try {
+            docid = delegate.newDocId(path);
+          } catch (IOException e) {
+            log.log(Level.WARNING, "Not pushing " + path, e);
+            continue;
+          }
+          builder.addPushItem(docid, new PushItem());
+          count++;
+          if (count % ASYNC_PUSH_ITEMS_BATCH_SIZE == 0) {
+            context.postApiOperationAsync(builder.build());
+            builder = new PushItems.Builder();
+            count = 0;
+          }
+        }
+        if (count > 0) {
+          context.postApiOperationAsync(builder.build());
+        }
+      } catch (IOException e) {
+        log.log(Level.WARNING, "Failed to push children of " + dir, e);
+      } finally {
+        try {
+          setLastAccessTime(dir, lastAccessTime);
+        } catch (IOException e) {
+          log.log(Level.WARNING, "Failed to restore last access time for "
+                  + dir, e);
+        }
+      }
     }
   }
 
@@ -1374,7 +1453,13 @@ public class FsRepository implements Repository {
 
   @Override
   public void close() {
-    delegate.destroy();
+    try {
+      if (asyncDirectoryPusherService != null) {
+        asyncDirectoryPusherService.shutdownNow();
+      }
+    } finally {
+      delegate.destroy();
+    }
   }
 
   static interface RepositoryEventPusher {
