@@ -25,7 +25,7 @@ detection. This connector implements the graph traversal strategy provided by th
 2. Run the connector
    ```
    java \
-      -jar target/google-cloudsearch-windows-filesystems-connector-v1-0.0.3.jar \
+      -jar target/google-cloudsearch-windows-filesystems-connector-v1-0.0.4.jar \
       -Dconfig=my.config
    ```
 

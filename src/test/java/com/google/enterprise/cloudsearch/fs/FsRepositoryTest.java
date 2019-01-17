@@ -80,11 +80,14 @@ import com.google.enterprise.cloudsearch.sdk.indexing.template.RepositoryContext
 import com.google.enterprise.cloudsearch.sdk.indexing.template.RepositoryDoc;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.nio.file.AccessDeniedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
+import java.nio.file.NoSuchFileException;
+import java.nio.file.NotDirectoryException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.AclFileAttributeView;
@@ -248,6 +251,19 @@ public class FsRepositoryTest {
     FsRepository fsRepository = new FsRepository(mockFileDelegate);
     assertEquals("application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         fsRepository.getDocMimeType(Paths.get("file.docx")));
+  }
+
+  @Test
+  public void testConstructorDefaultWindows() {
+    TestHelper.assumeOsIsWindows();
+    new FsRepository();
+  }
+
+  @Test
+  public void testConstructorDefaultNonWindows() {
+    TestHelper.assumeOsIsNotWindows();
+    thrown.expect(IllegalStateException.class);
+    new FsRepository();
   }
 
   @Test
@@ -620,6 +636,74 @@ public class FsRepositoryTest {
         ImmutableSet.of(Paths.get("\\\\server\\share1"), Paths.get("\\\\server\\share2"),
             Paths.get("\\\\server\\share3"));
     assertEquals(expected, fsRepository.getStartPaths(sources, separator));
+  }
+
+  @Test
+  public void testValidateStartPathInvalidDocId() throws Exception {
+    Path p = Paths.get("/invalid");
+    when(mockFileDelegate.newDocId(p)).thenThrow(IOException.class);
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    thrown.expect(InvalidConfigurationException.class);
+    fsRepository.validateStartPath(p, false);
+  }
+
+  @Test
+  public void testValidateShareDfsNamespace() throws Exception {
+    String dfsNamespace = "\\\\dfs-server\\share";
+    Path startPath = setUpStartPath(dfsNamespace);
+    List<Path> links = addDfsLinks(dfsNamespace, 2);
+    setConfig(dfsNamespace);
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    thrown.expect(AssertionError.class);
+    fsRepository.validateShare(startPath);
+  }
+
+  @Test
+  public void testValidateShareNotDirectory() throws Exception {
+    String startName = "\\\\server\\share\\file";
+    Path startPath = setUpStartPath(startName);
+    setConfig(startName);
+    when(mockFileDelegate.newDirectoryStream(startPath)).thenThrow(NotDirectoryException.class);
+
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    thrown.expect(InvalidConfigurationException.class);
+    fsRepository.validateShare(startPath);
+  }
+
+  @Test
+  public void testValidateShareNotFound() throws Exception {
+    String startName = "\\\\server\\share\\file";
+    Path startPath = setUpStartPath(startName);
+    setConfig(startName);
+    when(mockFileDelegate.newDirectoryStream(startPath)).thenThrow(FileNotFoundException.class);
+
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    thrown.expect(InvalidConfigurationException.class);
+    fsRepository.validateShare(startPath);
+  }
+
+  @Test
+  public void testValidateShareNoSuchFile() throws Exception {
+    String startName = "\\\\server\\share\\file";
+    Path startPath = setUpStartPath(startName);
+    setConfig(startName);
+    when(mockFileDelegate.newDirectoryStream(startPath)).thenThrow(NoSuchFileException.class);
+
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    thrown.expect(InvalidConfigurationException.class);
+    fsRepository.validateShare(startPath);
+  }
+
+  @Test
+  public void testValidateShareIOException() throws Exception {
+    String startName = "\\\\server\\share\\file";
+    Path startPath = setUpStartPath(startName);
+    setConfig(startName);
+    when(mockFileDelegate.newDirectoryStream(startPath)).thenThrow(IOException.class);
+
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    thrown.expect(IOException.class);
+    fsRepository.validateShare(startPath);
   }
 
   @Test
@@ -1010,6 +1094,21 @@ public class FsRepositoryTest {
         .build());
     assertTrue(Iterables.elementsEqual(expectedList, result));
     verify(mockFileDelegate).startMonitorPath(eq(startPath), any());
+  }
+
+  @Test
+  public void testGetIdsIOException() throws IOException {
+    String startName = "/";
+    Path startPath = setUpStartPath(startName);
+
+    setConfig(startName);
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    fsRepository.init(mockRepositoryContext);
+
+    // If this exception is set up before calling init(), init fails instead of getIds.
+    when(mockFileDelegate.newDocId(startPath)).thenThrow(IOException.class);
+    thrown.expect(RepositoryException.class);
+    fsRepository.getIds(null);
   }
 
   @Test
