@@ -53,6 +53,7 @@ import java.nio.file.attribute.AclFileAttributeView;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -69,8 +70,9 @@ class WindowsFileDelegate extends NioFileDelegate {
   private final Netapi32Ex netapi32;
   private final WindowsAclFileAttributeViews aclViews;
   private final long notificationPauseMillis;
-  private HashMap<Path, MonitorThread> monitors = new HashMap<Path, MonitorThread>();
-  private AsyncApiOperationFactory asyncApiOperationFactory;
+  @VisibleForTesting final HashMap<Path, MonitorThread> monitors
+      = new HashMap<Path, MonitorThread>();
+  private final AsyncApiOperationFactory asyncApiOperationFactory;
 
   public WindowsFileDelegate() {
     this(
@@ -701,12 +703,13 @@ class WindowsFileDelegate extends NioFileDelegate {
           if (ex.getCause() instanceof GoogleJsonResponseException) {
             log.log(Level.FINE, "Caught exception processing change for " + change.path);
             log.log(Level.FINE,
-                ((GoogleJsonResponseException) ex.getCause()).getDetails().toString());
+                String.valueOf(((GoogleJsonResponseException) ex.getCause()).getDetails()));
           } else if (ex.getCause() != null
               && ex.getCause().getCause() instanceof GoogleJsonResponseException) {
             log.log(Level.FINE, "Caught exception processing change for " + change.path);
             log.log(Level.FINE,
-                ((GoogleJsonResponseException) ex.getCause().getCause()).getDetails().toString());
+                String.valueOf(
+                    ((GoogleJsonResponseException) ex.getCause().getCause()).getDetails()));
           } else {
             log.log(Level.FINE, "Caught exception processing change for " + change.path,
                 ex.getCause());
@@ -717,61 +720,6 @@ class WindowsFileDelegate extends NioFileDelegate {
           Level.FINER,
           "Processed {0} change notifications for {1}",
           new Object[] {count, watchPath});
-    }
-
-    // Keep the AsyncApiOperation and Path together for better logging later; the
-    // AsyncApiOperation doesn't have a way to show what it's operating on.
-    private class ChangeRecord {
-      private final Path path;
-      private final AsyncApiOperation operation;
-
-      private ChangeRecord(Path path,  AsyncApiOperation operation) {
-        this.path = path;
-        this.operation = operation;
-      }
-
-      @Override
-      public boolean equals(Object other) {
-        if (other == null || !(other instanceof ChangeRecord)) {
-          return false;
-        }
-        ChangeRecord otherRecord = (ChangeRecord) other;
-        return path.equals(otherRecord.path)
-            && operation.equals(((ChangeRecord) other).operation);
-      }
-
-      @Override
-      public String toString() {
-        return path + ":" + operation.getOperation().getClass().getSimpleName();
-      }
-    }
-
-    private ChangeRecord newChangeRecord(Path doc, boolean deleted) {
-      try {
-        String docid;
-        try {
-          docid = newDocId(doc);
-        } catch (IllegalArgumentException e) {
-          log.log(
-              Level.WARNING,
-              "Skipping changed {0} because {1}.",
-              new Object[] {doc, e.getMessage()});
-          return null;
-        }
-        if (deleted) {
-          return new ChangeRecord(doc,
-              asyncApiOperationFactory.getAsyncApiOperation(ApiOperations.deleteItem(docid)));
-        } else if (isRegularFile(doc) || isDirectory(doc)) {
-          return new ChangeRecord(doc,
-              asyncApiOperationFactory.getAsyncApiOperation(new PushItems.Builder()
-                  .addPushItem(docid, new PushItem().setType("MODIFIED")).build()));
-        } else {
-          log.log(Level.FINEST, "Skipping {0}. It is not a regular file or directory.", doc);
-        }
-      } catch (IOException e) {
-        log.log(Level.WARNING, "Unable to send a change notification for path " + doc + ".", e);
-      }
-      return null;
     }
 
     private synchronized void pauseNotifications() {
@@ -795,6 +743,60 @@ class WindowsFileDelegate extends NioFileDelegate {
       }
       return false;
     }
+  }
+
+  // Keep the AsyncApiOperation and Path together for better logging later; the
+  // AsyncApiOperation doesn't have a way to show what it's operating on.
+  @VisibleForTesting
+  class ChangeRecord {
+    private final Path path;
+    private final AsyncApiOperation operation;
+
+    private ChangeRecord(Path path,  AsyncApiOperation operation) {
+      this.path = path;
+      this.operation = operation;
+    }
+
+    @Override
+    public boolean equals(Object other) {
+      if (other == null || !(other instanceof ChangeRecord)) {
+        return false;
+      }
+      ChangeRecord otherRecord = (ChangeRecord) other;
+      return path.equals(otherRecord.path)
+          && operation.getOperation().equals(otherRecord.operation.getOperation());
+    }
+
+    @Override
+    public int hashCode() {
+      return Objects.hash(path, operation.getOperation());
+    }
+
+    @Override
+    public String toString() {
+      return path + ":" + operation.getOperation().getClass().getSimpleName();
+    }
+  }
+
+  @VisibleForTesting
+  ChangeRecord newChangeRecord(Path doc, boolean deleted) {
+    try {
+      String docid;
+      docid = newDocId(doc);
+      if (deleted) {
+        return new ChangeRecord(doc,
+            asyncApiOperationFactory.getAsyncApiOperation(ApiOperations.deleteItem(docid)));
+      } else if (isRegularFile(doc) || isDirectory(doc)) {
+        return new ChangeRecord(doc,
+            asyncApiOperationFactory.getAsyncApiOperation(new PushItems.Builder()
+                .addPushItem(docid, new PushItem().setType("MODIFIED")).build()));
+      } else {
+        log.log(Level.FINEST, "Skipping {0}. It is not a regular file or directory.", doc);
+      }
+    } catch (IOException e) {
+      log.log(Level.WARNING, "Unable to send a change notification for path " + doc + ".", e);
+    }
+    return null;
   }
 
   @Override

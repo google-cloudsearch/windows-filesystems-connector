@@ -15,20 +15,28 @@
  */
 package com.google.enterprise.cloudsearch.fs;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.attribute.AclEntryFlag.DIRECTORY_INHERIT;
 import static java.nio.file.attribute.AclEntryFlag.FILE_INHERIT;
 import static java.nio.file.attribute.AclEntryType.ALLOW;
 import static java.nio.file.attribute.AclEntryType.DENY;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeNotNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.when;
 
+import com.google.api.client.googleapis.json.GoogleJsonResponseException;
+import com.google.api.client.googleapis.testing.json.GoogleJsonResponseExceptionFactoryTesting;
 import com.google.api.client.json.GenericJson;
+import com.google.api.client.json.jackson2.JacksonFactory;
 import com.google.api.services.cloudsearch.v1.model.Item;
 import com.google.api.services.cloudsearch.v1.model.PushItem;
 import com.google.common.collect.ImmutableList;
@@ -102,16 +110,26 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
 
   private static class SettableAsyncApiOperation extends AsyncApiOperation {
     private GenericJson result;
+    private Throwable exception;
 
     SettableAsyncApiOperation(ApiOperation operation, GenericJson result) {
       super(operation);
       this.result = result;
     }
 
+    SettableAsyncApiOperation(ApiOperation operation, Throwable throwable) {
+      super(operation);
+      this.exception = throwable;
+    }
+
     @Override
     public ListenableFuture<List<GenericJson>> getResult() {
       SettableFuture<List<GenericJson>> result = SettableFuture.create();
-      result.set(ImmutableList.of(this.result));
+      if (exception != null) {
+        result.setException(this.exception);
+      } else {
+        result.set(ImmutableList.of(this.result));
+      }
       return result;
     }
   }
@@ -171,7 +189,7 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
       assertEquals(lastAccess, attrs.lastAccessTime());
 
       Path file = Paths.get(child.toString(), "test.txt");
-      Files.write(file, alpha.getBytes("UTF-8"));
+      Files.write(file, alpha.getBytes(UTF_8));
       InputStream in = delegate.newInputStream(file);
       assertEquals('a', in.read());
       in.close();
@@ -190,11 +208,10 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
     }
     // Verify the monitor has not died.
     Path file = newTempFile("test.txt");
-    Files.write(file, alpha.getBytes("UTF-8"));
+    Files.write(file, alpha.getBytes(UTF_8));
     changes.add(newRecord(file));
 
     checkForChanges(changes);
-    delegate.destroy();
   }
 
   private void testGetDfsShareAclView(String path, int lastError, boolean isLinkAcl)
@@ -867,7 +884,7 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
   public void testMonitorModifyFile() throws Exception {
     Path file = newTempFile("test.txt");
     delegate.startMonitorPath(tempRoot, mockEventPusher);
-    Files.write(file, "Hello World".getBytes("UTF-8"));
+    Files.write(file, "Hello World".getBytes(UTF_8));
     // Modifying a file shows up as a change to that file.
     checkForChanges(Collections.singleton(newRecord(file)));
   }
@@ -909,7 +926,7 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
     Path dir = newTempDir("testDir");
     Path file = newTempFile(dir, "test.txt");
     delegate.startMonitorPath(tempRoot, mockEventPusher);
-    Files.write(file, "Hello World".getBytes("UTF-8"));
+    Files.write(file, "Hello World".getBytes(UTF_8));
     // Modifying a file shows up as a change to that file.
     checkForChanges(Sets.newHashSet(newRecord(file), newRecord(dir)));
   }
@@ -919,7 +936,7 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
     Path file1 = newTempFile(tempRoot, "test1.txt");
     Path file2 = newTempFile(tempRoot, "test2.txt");
     Path file3 = newTempFile(tempRoot, "test3.txt");
-    byte[] contents = "Hello World".getBytes("UTF-8");
+    byte[] contents = "Hello World".getBytes(UTF_8);
 
     // Delegate with a Kernel32Ex that fails ReadDirectoryChangesW.
     Kernel32Ex kernel32 = new ChangeFailingKernel32(Kernel32Ex.INSTANCE, 0, 64, 64, 53);
@@ -939,8 +956,116 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
     // Monitoring should be re-enabled, so this one should go through.
     Files.write(file3, contents);
     checkForChanges(Collections.singleton(newRecord(file3)));
-    delegate.destroy();
   }
+
+  @Test
+  public void testMonitorNotifyEnumDirError() throws Exception {
+    Path file1 = newTempFile(tempRoot, "test1.txt");
+    Path file2 = newTempFile(tempRoot, "test2.txt");
+    byte[] contents = "Hello World".getBytes(UTF_8);
+
+    // Delegate with a Kernel32Ex that fails ReadDirectoryChangesW.
+    Kernel32Ex kernel32 = new ChangeFailingKernel32(Kernel32Ex.INSTANCE,
+        W32Errors.ERROR_NOTIFY_ENUM_DIR);
+
+    WindowsFileDelegate delegate =
+        new WindowsFileDelegate(null, kernel32, null, null, 0, mockAsyncApiOperationFactory);
+    delegate.startMonitorPath(tempRoot, mockEventPusher);
+    Files.write(file1, contents);
+
+    // ERROR_NOTIFY_ENUM_DIR should cause the monitor to pause. No changes should be
+    // available immediately, but after the monitor resumes future changes should be
+    // detected.
+    checkForChanges(Sets.newHashSet());
+    Thread.sleep(2500);
+
+    Files.write(file2, contents);
+    checkForChanges(Collections.singleton(newRecord(file2)));
+  }
+
+  // When something went wrong on the server and the operation result was an error, the
+  // monitor logs the failure; construct a couple of error variations here to trigger that
+  // logging; checkForChanges will still show the change as being sent.
+  @Test
+  public void testMonitorOperationError() throws Exception {
+    GoogleJsonResponseException jsonException =
+        GoogleJsonResponseExceptionFactoryTesting.newMock(
+            JacksonFactory.getDefaultInstance(), 404, "Not found");
+    byte[] contents = "Hello World".getBytes(UTF_8);
+
+    // Test exception variations
+    Path file1 = newTempFile(tempRoot, "test1.txt");
+    ApiOperation operation1 = newRecord(file1);
+    Path file2 = newTempFile(tempRoot, "test2.txt");
+    ApiOperation operation2 = newRecord(file2);
+    Path file3 = newTempFile(tempRoot, "test3.txt");
+    ApiOperation operation3 = newRecord(file3);
+
+    delegate.startMonitorPath(tempRoot, mockEventPusher);
+
+    doAnswer(
+        invocation -> {
+          ApiOperation op = invocation.getArgument(0);
+          Throwable t = new Throwable("failed");
+          return new SettableAsyncApiOperation(op, t);
+        })
+        .when(mockAsyncApiOperationFactory)
+        .getAsyncApiOperation(operation1);
+    Files.write(file1, contents);
+    checkForChanges(Collections.singleton(operation1));
+
+    doAnswer(
+        invocation -> {
+          ApiOperation op = invocation.getArgument(0);
+          Throwable t = new Throwable("failed", jsonException);
+          return new SettableAsyncApiOperation(op, t);
+        })
+        .when(mockAsyncApiOperationFactory)
+        .getAsyncApiOperation(operation2);
+    Files.write(file2, contents);
+    checkForChanges(Collections.singleton(operation2));
+
+    doAnswer(
+        invocation -> {
+          ApiOperation op = invocation.getArgument(0);
+          return new SettableAsyncApiOperation(op, jsonException);
+        })
+        .when(mockAsyncApiOperationFactory)
+        .getAsyncApiOperation(operation3);
+    Files.write(file3, contents);
+    checkForChanges(Collections.singleton(operation3));
+  }
+
+  @Test
+  public void testMonitorStartAgain() throws Exception {
+    delegate.startMonitorPath(tempRoot, mockEventPusher);
+    Object t = ((WindowsFileDelegate) delegate).monitors.get(tempRoot);
+    delegate.startMonitorPath(tempRoot, mockEventPusher);
+    // Check that calling startMonitorPath a second time didn't create a new thread.
+    assertSame(t, ((WindowsFileDelegate) delegate).monitors.get(tempRoot));
+  }
+
+  @Test
+  public void testChangeRecord() throws Exception {
+    WindowsFileDelegate winDelegate = (WindowsFileDelegate) delegate;
+    WindowsFileDelegate.ChangeRecord push1 = winDelegate.newChangeRecord(Paths.get("/"), false);
+    WindowsFileDelegate.ChangeRecord push2 = winDelegate.newChangeRecord(Paths.get("/"), false);
+    assertEquals(push1, push2);
+
+    WindowsFileDelegate.ChangeRecord del1 = winDelegate.newChangeRecord(Paths.get("/"), true);
+    WindowsFileDelegate.ChangeRecord del2 = winDelegate.newChangeRecord(Paths.get("/"), true);
+    WindowsFileDelegate.ChangeRecord del3 = winDelegate.newChangeRecord(Paths.get("/other"), true);
+    assertEquals(del1, del2);
+    assertNotEquals(del1, del3);
+
+    assertNotEquals(push1, del1);
+    assertNotNull(push1);
+    assertNotEquals(push1, newRecord(Paths.get("/")));
+
+    WindowsFileDelegate spyd = spy((WindowsFileDelegate) delegate);
+    when(spyd.newDocId(Paths.get("/"))).thenThrow(IOException.class);
+    assertEquals(null, spyd.newChangeRecord(Paths.get("/"), true));
+   }
 
   /**
    * A Kernel32 implementation that returns one of the specified error codes on each call to
@@ -973,6 +1098,7 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
         OVERLAPPED_COMPLETION_ROUTINE completionRoutine) {
       if (index < codes.length && codes[index] != 0) {
         lastError = codes[index++];
+        completionRoutine.callback(lastError, 0, null);
         return false;
       }
       index++;

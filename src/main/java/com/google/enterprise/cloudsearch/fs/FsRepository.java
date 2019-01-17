@@ -493,11 +493,12 @@ public class FsRepository implements Repository {
   }
 
   /** Verify that a startPath is valid. */
-  private void validateStartPath(Path startPath, boolean logging)
+  @VisibleForTesting
+  void validateStartPath(Path startPath, boolean logging)
       throws IOException, InvalidConfigurationException {
     try {
       delegate.newDocId(startPath);
-    } catch (IllegalArgumentException e) {
+    } catch (IOException e) {
       throw new InvalidConfigurationException("The path " + startPath
              + " is not valid path - " + e.getMessage() + ".");
     }
@@ -557,7 +558,8 @@ public class FsRepository implements Repository {
   }
 
   /** Verify the path is available and we have access to it. */
-  private void validateShare(Path sharePath) throws IOException {
+  @VisibleForTesting
+  void validateShare(Path sharePath) throws IOException {
     if (delegate.isDfsNamespace(sharePath)) {
       throw new AssertionError("validateShare may only be called "
           + "on DFS links or active storage paths.");
