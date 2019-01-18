@@ -1,0 +1,23 @@
+# Normal private files
+build/
+target/
+dist/
+adaptor-config.properties
+cacerts.jks
+keys.jks
+adaptor.crt
+gsa.crt
+
+# Eclipse files
+.classpath
+.project
+.settings/
+
+# IntelliJ files
+workspace/
+classes/
+.idea
+Plexi.iml
+
+# NetBeans files
+nbproject/
