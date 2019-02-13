@@ -29,7 +29,6 @@ import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.util.Iterator;
-import java.util.List;
 
 class MockFileDelegate implements FileDelegate {
 
@@ -178,13 +177,18 @@ class MockFileDelegate implements FileDelegate {
   }
 
   @Override
-  public List<Path> enumerateDfsLinks(Path doc) throws IOException {
+  public DirectoryStream<Path> newDfsLinkStream(Path doc) throws IOException {
     MockFile file = getFile(doc);
-    if (file.isDfsNamespace()) {
-      return ImmutableList.copyOf(file.newDirectoryStream());
-    } else {
+    if (!file.isDfsNamespace()) {
       throw new IOException("Not a DFS Root: " + doc);
     }
+    ImmutableList.Builder<Path> builder = ImmutableList.builder();
+    for (Path path : file.newDirectoryStream()) {
+      if (isDfsLink(path)) {
+        builder.add(path);
+      }
+    }
+    return new PathDirectoryStream(builder.build());
   }
 
   @Override

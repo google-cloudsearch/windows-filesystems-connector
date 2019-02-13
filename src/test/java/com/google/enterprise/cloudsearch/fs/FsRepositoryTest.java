@@ -18,6 +18,7 @@ package com.google.enterprise.cloudsearch.fs;
 import static com.google.enterprise.cloudsearch.fs.AclView.GenericPermission;
 import static com.google.enterprise.cloudsearch.fs.AclView.group;
 import static com.google.enterprise.cloudsearch.fs.AclView.user;
+import static com.google.enterprise.cloudsearch.fs.FileDelegate.PathDirectoryStream;
 import static com.google.enterprise.cloudsearch.fs.FsRepository.ASYNC_PUSH_ITEMS_BATCH_SIZE;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.attribute.AclEntryFlag.DIRECTORY_INHERIT;
@@ -40,6 +41,7 @@ import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -377,6 +379,8 @@ public class FsRepositoryTest {
     String startName = "/";
     Path startPath = setUpStartPath(startName);
     when(mockFileDelegate.isDfsLink(startPath)).thenReturn(true);
+    AclFileAttributeView mockAttributeView = mock(AclFileAttributeView.class);
+    when(mockFileDelegate.getDfsShareAclView(startPath)).thenReturn(mockAttributeView);
     // resolveDfsLink (WindowsFileDelegate) throws IOException when no active storage is found
     when(mockFileDelegate.resolveDfsLink(startPath)).thenThrow(IOException.class);
 
@@ -413,13 +417,20 @@ public class FsRepositoryTest {
     Path dfsPath = Paths.get(dfsNamespace);
     when(mockFileDelegate.getPath(dfsNamespace)).thenReturn(dfsPath);
     when(mockFileDelegate.isDfsNamespace(dfsPath)).thenReturn(true);
+    AclFileAttributeView mockAttributeView = mock(AclFileAttributeView.class);
+    when(mockFileDelegate.getDfsShareAclView(dfsPath)).thenReturn(mockAttributeView);
     List<Path> links = new ArrayList<>();
     for (int i = 0; i < count; i++) {
       Path link = Paths.get(dfsNamespace, "link" + i);
       when(mockFileDelegate.resolveDfsLink(link)).thenReturn(link);
       links.add(link);
     }
-    when(mockFileDelegate.enumerateDfsLinks(dfsPath)).thenReturn(links);
+    doAnswer(
+        invocation -> {
+          return new PathDirectoryStream(links);
+        })
+        .when(mockFileDelegate)
+        .newDfsLinkStream(dfsPath);
     return links;
   }
 
@@ -648,17 +659,6 @@ public class FsRepositoryTest {
   }
 
   @Test
-  public void testValidateShareDfsNamespace() throws Exception {
-    String dfsNamespace = "\\\\dfs-server\\share";
-    Path startPath = setUpStartPath(dfsNamespace);
-    List<Path> links = addDfsLinks(dfsNamespace, 2);
-    setConfig(dfsNamespace);
-    FsRepository fsRepository = new FsRepository(mockFileDelegate);
-    thrown.expect(AssertionError.class);
-    fsRepository.validateShare(startPath);
-  }
-
-  @Test
   public void testValidateShareNotDirectory() throws Exception {
     String startName = "\\\\server\\share\\file";
     Path startPath = setUpStartPath(startName);
@@ -868,7 +868,6 @@ public class FsRepositoryTest {
     String startName = "/";
     Path startPath = setUpStartPath(startName);
     when(mockFileDelegate.isDfsLink(startPath)).thenReturn(true);
-    when(mockFileDelegate.resolveDfsLink(startPath)).thenReturn(startPath);
     when(mockFileDelegate.getDfsShareAclView(startPath)).thenThrow(IOException.class);
 
     setConfig(startName);
@@ -1461,25 +1460,68 @@ public class FsRepositoryTest {
   }
 
   @Test
+  public void testGetDocDirectoryBadChildDocid() throws Exception {
+    String rootName = "/";
+    String dirName = "testDir";
+    MockFile dir = new MockFile(dirName, true)
+        .setAclView(EMPTY_ACLVIEW)
+        .setShareAclView(FULL_ACCESS_ACLVIEW);
+    String[] files = { "subdir1", "subdir2", "test1.txt", "test2.txt" };
+    for (String file : files) {
+      dir.addChildren(new MockFile(file, file.contains("dir")));
+    }
+    MockFile root = getShareRootDefaultAclViews(rootName)
+        .addChildren(dir);
+    MockFileDelegate delegate = spy(new MockFileDelegate(root));
+    Path childWithBadId = Paths.get("/testDir/test2.txt");
+    when(delegate.newDocId(childWithBadId)).thenThrow(IOException.class);
+
+    setConfig(rootName);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+
+    String docId = delegate.newDocId(dir);
+    RepositoryDoc result = getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
+
+    Map<String, PushItem> expectedIds = new HashMap<>();
+    expectedIds.put("/testDir/subdir1", new PushItem());
+    expectedIds.put("/testDir/subdir2", new PushItem());
+    expectedIds.put("/testDir/test1.txt", new PushItem());
+    assertEquals(expectedIds, result.getChildIds());
+  }
+
+  private MockFileDelegate addDfsNamespaceContent(MockFile dfsNamespace, int numLinks, int numFiles,
+      int numFolders) {
+    List<MockFile> roots = new ArrayList<>();
+    roots.add(dfsNamespace);
+    for (int i = 0; i < numLinks; i++) {
+      MockFile target = new MockFile("\\\\host\\share" + i, true)
+          .setShareAclView(FULL_ACCESS_ACLVIEW);
+      MockFile link = getDfsLink("dfsLink" + i, target)
+          .setDfsShareAclView(FULL_ACCESS_ACLVIEW);
+      roots.add(target);
+      dfsNamespace.addChildren(link);
+    }
+
+    for (int i = 0; i < numFiles; i++) {
+      dfsNamespace.addChildren(new MockFile("file" + i, false));
+    }
+    for (int i = 0; i < numFolders; i++) {
+      dfsNamespace.addChildren(new MockFile("dir" + i, true));
+    }
+    return new MultiRootMockFileDelegate(Iterables.toArray(roots, MockFile.class));
+  }
+
+  @Test
   public void testGetDocDfsNamespace() throws Exception {
     String rootName = "/";
     DateTime createDateTime = new DateTime(10000);
     DateTime updateDateTime = new DateTime(30000);
-
-    MockFile dfsTarget1 = new MockFile("\\\\host\\share1", true)
-        .setShareAclView(FULL_ACCESS_ACLVIEW);
-    MockFile dfsLink1 = getDfsLink("dfsLink1", dfsTarget1)
-        .setDfsShareAclView(FULL_ACCESS_ACLVIEW);
-    MockFile dfsTarget2 = new MockFile("\\\\host\\share2", true)
-        .setShareAclView(FULL_ACCESS_ACLVIEW);
-    MockFile dfsLink2 = getDfsLink("dfsLink2", dfsTarget2)
-        .setDfsShareAclView(FULL_ACCESS_ACLVIEW);
     MockFile dfsNamespace = getDfsNamespace(rootName)
         .setCreationTime(FileTime.fromMillis(createDateTime.getValue()))
-        .setLastModifiedTime(FileTime.fromMillis(updateDateTime.getValue()))
-        .addChildren(dfsLink1, dfsLink2);
-    MultiRootMockFileDelegate delegate =
-        new MultiRootMockFileDelegate(dfsNamespace, dfsTarget1, dfsTarget2);
+        .setLastModifiedTime(FileTime.fromMillis(updateDateTime.getValue()));
+    MockFileDelegate delegate = addDfsNamespaceContent(dfsNamespace,
+        /*links*/ 2, /*files*/ 0, /*folders*/ 0);
 
     setConfig(rootName);
     FsRepository fsRepository = new FsRepository(delegate);
@@ -1499,12 +1541,59 @@ public class FsRepositoryTest {
         .setName(docId);
     assertJsonEquals(expectedItem, result.getItem());
     RepositoryDoc expectedDoc = new RepositoryDoc.Builder()
+        .addChildId("/dfsLink0", new PushItem())
         .addChildId("/dfsLink1", new PushItem())
-        .addChildId("/dfsLink2", new PushItem())
         .setItem(expectedItem)
         .setRequestMode(RequestMode.ASYNCHRONOUS)
         .build();
     assertEquals(expectedDoc, result);
+  }
+
+  @Test
+  public void testGetDocDfsNamespaceHasFilesButNotAllowed() throws Exception {
+    String rootName = "/";
+    MockFile dfsNamespace = getDfsNamespace(rootName);
+    MockFileDelegate delegate = addDfsNamespaceContent(dfsNamespace,
+        /*links*/ 2, /*files*/ 2, /*folders*/ 1);
+
+    Properties config = new Properties();
+    config.put("fs.allowFilesInDfsNamespaces", "false");
+    setConfig(rootName, config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+
+    String docId = delegate.newDocId(dfsNamespace);
+    RepositoryDoc result = getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
+
+    Map<String, PushItem> childIds = result.getChildIds();
+    Map<String, PushItem> expectedIds = new HashMap<>();
+    expectedIds.put("/dfsLink0", new PushItem());
+    expectedIds.put("/dfsLink1", new PushItem());
+    assertEquals(expectedIds, childIds);
+  }
+
+  @Test
+  public void testGetDocDfsNamespaceHasFilesAllowed() throws Exception {
+    String rootName = "/";
+    MockFile dfsNamespace = getDfsNamespace(rootName)
+        .setAclView(FULL_ACCESS_ACLVIEW);
+    MockFileDelegate delegate = addDfsNamespaceContent(dfsNamespace,
+        /*links*/ 2, /*files*/ 2, /*folders*/ 1);
+
+    Properties config = new Properties();
+    config.put("fs.allowFilesInDfsNamespaces", "true");
+    setConfig(rootName, config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+
+    String docId = delegate.newDocId(dfsNamespace);
+    RepositoryDoc result = getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
+
+    Map<String, PushItem> childIds = result.getChildIds();
+    Map<String, PushItem> expectedIds = new HashMap<>();
+    ImmutableSet.of("/dfsLink0", "/dfsLink1", "/file0", "/file1", "/dir0")
+        .stream().forEach(key -> expectedIds.put(key, new PushItem()));
+    assertEquals(expectedIds, childIds);
   }
 
   private static final JacksonFactory jacksonFactory = JacksonFactory.getDefaultInstance();
@@ -1739,7 +1828,7 @@ public class FsRepositoryTest {
     inOrder.verify(mockFileDelegate).isDfsLink(folderPath);
     inOrder.verify(mockFileDelegate).newDocId(startPath);
     inOrder.verify(mockFileDelegate).probeContentType(filePath); // mock it ?
-    inOrder.verify(mockFileDelegate).setLastAccessTime(eq(filePath), any());
+    inOrder.verify(mockFileDelegate).setLastAccessTime(eq(filePath), any(FileTime.class));
     inOrder.verifyNoMoreInteractions();
   }
 
@@ -1780,7 +1869,7 @@ public class FsRepositoryTest {
     inOrder.verify(mockFileDelegate).isDfsLink(folderPath);
     inOrder.verify(mockFileDelegate).newDocId(startPath);
     inOrder.verify(mockFileDelegate).newDirectoryStream(folderPath);
-    inOrder.verify(mockFileDelegate).setLastAccessTime(eq(folderPath), any());
+    inOrder.verify(mockFileDelegate).setLastAccessTime(eq(folderPath), any(FileTime.class));
     inOrder.verifyNoMoreInteractions();
   }
 
@@ -1791,6 +1880,7 @@ public class FsRepositoryTest {
     when(mockFileDelegate.isHidden(path)).thenReturn(false);
     when(mockFileDelegate.isDfsNamespace(path)).thenReturn(false);
     BasicFileAttributes mockBasicFileAttributes = mock(BasicFileAttributes.class);
+    when(mockBasicFileAttributes.lastAccessTime()).thenReturn(FileTime.fromMillis(1234567890L));
     when(mockBasicFileAttributes.lastModifiedTime()).thenReturn(FileTime.fromMillis(1234567890L));
     when(mockBasicFileAttributes.creationTime()).thenReturn(FileTime.fromMillis(1234567890L));
     when(mockBasicFileAttributes.isDirectory()).thenReturn(isDirectory);
@@ -2273,7 +2363,9 @@ public class FsRepositoryTest {
   }
 
   private MockFile getDfsNamespace(String name) {
-    return new MockFile(name, true).setIsDfsNamespace(true);
+    return new MockFile(name, true)
+        .setIsDfsNamespace(true)
+        .setDfsShareAclView(FULL_ACCESS_ACLVIEW);
   }
 
   private void verifyDocAcls(FileDelegate delegate, Properties config, String startPoint,
