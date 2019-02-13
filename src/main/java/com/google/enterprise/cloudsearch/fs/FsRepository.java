@@ -251,6 +251,9 @@ public class FsRepository implements Repository {
   /** The config parameter name for the directory size that triggers async processing. */
   private static final String CONFIG_LARGE_DIRECTORY_LIMIT = "fs.largeDirectoryLimit";
 
+  /** The config parameter name to indicate if files/folders are supported in DFS namespaces. */
+  private static final String CONFIG_ALLOW_FILES_IN_DFS_NAMESPACES = "fs.allowFilesInDfsNamespaces";
+
   /** Properties filename to specify mime types. */
   private static final String MIME_TYPE_PROP_FILENAME = "mime-type.properties";
 
@@ -338,6 +341,9 @@ public class FsRepository implements Repository {
 
   /** ExecutorService for asychronous pushing of large directory content. */
   private ExecutorService asyncDirectoryPusherService;
+
+  /** Allow files/folders in DFS namespaces. */
+  private boolean allowFilesInDfsNamespaces;
 
   public FsRepository() {
     // We only support Windows.
@@ -449,6 +455,9 @@ public class FsRepository implements Repository {
     lastModifiedTimeFilter =
         getFileTimeFilter(CONFIG_LAST_MODIFIED_DAYS, CONFIG_LAST_MODIFIED_DATE);
 
+    allowFilesInDfsNamespaces = Configuration.getBoolean(
+        CONFIG_ALLOW_FILES_IN_DFS_NAMESPACES, Boolean.FALSE).get();
+
     monitorForUpdates = Configuration.getBoolean(CONFIG_MONITOR_UPDATES, Boolean.TRUE).get();
     log.log(Level.CONFIG, "monitorForUpdates: {0}", monitorForUpdates);
 
@@ -503,6 +512,10 @@ public class FsRepository implements Repository {
              + " is not valid path - " + e.getMessage() + ".");
     }
 
+    // Do this as soon as possible, since it is selective in how it handles
+    // various exceptions.
+    validateShare(startPath);
+
     if (!crawlHiddenFiles && delegate.isHidden(startPath)) {
       throw new InvalidConfigurationException("The path " + startPath + " is "
           + "hidden. To crawl hidden content, you must set the configuration "
@@ -518,32 +531,32 @@ public class FsRepository implements Repository {
       if (logging) {
         log.log(Level.INFO, "Using a DFS path resolved to {0}", dfsActiveStorage);
       }
-      validateShare(startPath);
     } else if (delegate.isDfsNamespace(startPath)) {
       if (logging) {
         log.log(Level.INFO, "Using a DFS namespace {0}", startPath);
       }
-      Set<Path> links = new HashSet<>();
-      for (Path link : delegate.enumerateDfsLinks(startPath)) {
-        // Postpone full validation until crawl time.
-        try {
-          Path dfsActiveStorage = delegate.resolveDfsLink(link);
-          links.add(link);
-          if (logging) {
-            log.log(Level.INFO, "DFS path {0} resolved to {1}",
-                    new Object[] {link, dfsActiveStorage});
+      Set<Path> linkSet = new HashSet<>();
+      try (DirectoryStream<Path> links = delegate.newDfsLinkStream(startPath)) {
+        for (Path link : links) {
+          // Postpone full validation until crawl time.
+          try {
+            Path dfsActiveStorage = delegate.resolveDfsLink(link);
+            linkSet.add(link);
+            if (logging) {
+              log.log(Level.INFO, "DFS path {0} resolved to {1}",
+                  new Object[] {link, dfsActiveStorage});
+            }
+          } catch (IOException e) {
+            log.log(Level.WARNING, "Unable to resolve DFS link " + startPath, e);
           }
-        } catch (IOException e) {
-          log.log(Level.WARNING, "Unable to resolve DFS link " + startPath, e);
         }
       }
-      dfsNamespaceLinks.put(startPath, links);
+      dfsNamespaceLinks.put(startPath, linkSet);
     } else {
       if (logging) {
         log.log(Level.INFO, "Using a {0}DFS path {1}", new Object[] {
             ((getDfsRoot(startPath) == null) ? "non-" : ""), startPath });
       }
-      validateShare(startPath);
     }
   }
 
@@ -560,14 +573,14 @@ public class FsRepository implements Repository {
   /** Verify the path is available and we have access to it. */
   @VisibleForTesting
   void validateShare(Path sharePath) throws IOException {
-    if (delegate.isDfsNamespace(sharePath)) {
-      throw new AssertionError("validateShare may only be called "
-          + "on DFS links or active storage paths.");
-    }
-
     // Verify that the connector has permission to read the contents of the root.
     try {
-      delegate.newDirectoryStream(sharePath).close();
+      if (delegate.isDfsNamespace(sharePath)) {
+        delegate.newDfsLinkStream(sharePath).close();
+      }
+      if (!delegate.isDfsNamespace(sharePath) || allowFilesInDfsNamespaces) {
+        delegate.newDirectoryStream(sharePath).close();
+      }
     } catch (AccessDeniedException e) {
       throw new IOException("Unable to list the contents of " + sharePath + ". This can happen if "
           + "the Windows account used to crawl the path does not have sufficient permissions.", e);
@@ -587,7 +600,9 @@ public class FsRepository implements Repository {
     // Verify that the connector has permission to read the ACL and share ACL.
     try {
       readShareAcls(sharePath);
-      delegate.getAclViews(sharePath);
+      if (!delegate.isDfsNamespace(sharePath) || allowFilesInDfsNamespaces) {
+        delegate.getAclViews(sharePath);
+      }
     } catch (IOException e) {
       throw new IOException("Unable to read ACLs for " + sharePath
           + ". This can happen if the Windows account used to crawl the path does not have "
@@ -634,51 +649,56 @@ public class FsRepository implements Repository {
   }
 
   private ShareAcls readShareAcls(Path share) throws IOException {
-    Acl shareAcl;
-    Acl dfsShareAcl;
-    Path dfsRoot = getDfsRoot(share);
-
     if (skipShareAcl) {
       // Ignore the Share ACL, but create a placeholder. Since items that inherit from the
       // Share ACL use BOTH_PERMIT (must be allowed by item + share), create an ACL here
       // that allows everyone.
-      dfsShareAcl = null;
-      shareAcl = new Acl.Builder()
+      Acl shareAcl = new Acl.Builder()
           .setReaders(Collections.singleton(Acl.getCustomerPrincipal()))
+          .setInheritanceType(InheritanceType.BOTH_PERMIT)
           .build();
-    } else if (delegate.isDfsNamespace(share)) {
-      throw new AssertionError("readShareAcls may only be called "
-          + "on DFS links or active storage paths.");
-    } else if (dfsRoot != null && delegate.isDfsLink(dfsRoot)) {
+      return new ShareAcls(shareAcl, null);
+    }
+
+    Path dfsRoot = getDfsRoot(share);
+    if (dfsRoot == null) {
+      // For a non-DFS UNC we have only have a share ACL to push.
+      AclBuilder builder = new AclBuilder(share,
+          delegate.getShareAclView(share),
+          supportedWindowsAccounts, builtinPrefix, supportedDomain);
+      Acl shareAcl = builder.getAcl()
+          .setInheritanceType(InheritanceType.BOTH_PERMIT)
+          .build();
+      return new ShareAcls(shareAcl, null);
+    } else {
       // For a DFS UNC we have a DFS ACL that must be sent. Also, the share ACL
       // must be the ACL for the target storage UNC.
       AclBuilder builder = new AclBuilder(share,
           delegate.getDfsShareAclView(dfsRoot),
           supportedWindowsAccounts, builtinPrefix, supportedDomain);
-      dfsShareAcl = builder.getAcl().build();
-
-      // Push the ACL for the active storage UNC path.
-      Path activeStorage = delegate.resolveDfsLink(dfsRoot);
-      if (activeStorage == null) {
-        throw new IOException("The DFS path " + share + " does not have an active storage.");
+      Acl dfsShareAcl = builder.getAcl()
+          .setInheritanceType(InheritanceType.BOTH_PERMIT)
+          .build();
+      if (delegate.isDfsNamespace(dfsRoot)) {
+        // Use the DFS Acl as the Share Acl for ordinary files and folders
+        // in the DFS Namespace.
+        return new ShareAcls(dfsShareAcl, null);
+      } else {  // Is a DFS Link.
+        // Push the Acl for the active storage UNC path.
+        Path activeStorage = delegate.resolveDfsLink(dfsRoot);
+        if (activeStorage == null) {
+          throw new IOException("The DFS path " + share
+              + " does not have an active storage.");
+        }
+        builder = new AclBuilder(activeStorage,
+            delegate.getShareAclView(activeStorage),
+            supportedWindowsAccounts, builtinPrefix, supportedDomain);
+        Acl shareAcl = builder.getAcl()
+            .setInheritFrom(delegate.newDocId(dfsRoot), DFS_SHARE_ACL)
+            .setInheritanceType(InheritanceType.BOTH_PERMIT).build();
+        return new ShareAcls(shareAcl, dfsShareAcl);
       }
-
-      builder = new AclBuilder(activeStorage,
-          delegate.getShareAclView(activeStorage),
-          supportedWindowsAccounts, builtinPrefix, supportedDomain);
-      shareAcl = builder.getAcl()
-          .setInheritFrom(delegate.newDocId(dfsRoot), DFS_SHARE_ACL)
-          .setInheritanceType(InheritanceType.BOTH_PERMIT).build();
-    } else {
-      // For a non-DFS UNC we have only have a share ACL to push.
-      AclBuilder builder = new AclBuilder(share,
-          delegate.getShareAclView(share),
-          supportedWindowsAccounts, builtinPrefix, supportedDomain);
-      dfsShareAcl = null;
-      shareAcl = builder.getAcl().build();
     }
-
-    return new ShareAcls(shareAcl, dfsShareAcl);
   }
 
   @Override
@@ -824,10 +844,17 @@ public class FsRepository implements Repository {
     Map<String, Acl> aclFragments = new HashMap<>();
     List<ApiOperation> operations = new ArrayList<>();
     try {
-      if (delegate.isDfsNamespace(doc)) {
+      if (!allowFilesInDfsNamespaces && delegate.isDfsNamespace(doc)) {
         try {
           // Enumerate links in a namespace.
-          getDfsNamespaceContent(doc, item, operationBuilder);
+          getDirectoryStreamContent(doc, null, item, operationBuilder,
+              new DirectoryStreamFactory() {
+                @Override
+                public DirectoryStream<Path> newDirectoryStream(Path dir)
+                    throws IOException {
+                  return delegate.newDfsLinkStream(dir);
+                }
+              });
         } catch (IOException e) {
           throw new RepositoryException.Builder().setCause(e).build();
         }
@@ -859,7 +886,14 @@ public class FsRepository implements Repository {
         // NoSuchFileException when trying to read directory contents.
         try {
           if (docIsDirectory) {
-            getDirectoryContent(doc, lastAccessTime, item, operationBuilder);
+            getDirectoryStreamContent(doc, lastAccessTime, item, operationBuilder,
+                new DirectoryStreamFactory() {
+                  @Override
+                  public DirectoryStream<Path> newDirectoryStream(Path dir)
+                      throws IOException {
+                    return delegate.newDirectoryStream(dir);
+                  }
+                });
           } else {
             getFileContent(doc, lastAccessTime, item, operationBuilder);
           }
@@ -903,6 +937,13 @@ public class FsRepository implements Repository {
     return ApiOperations.batch(operations.iterator());
   }
 
+  /**
+   * Factory interface for creating new DirectoryStreams.
+   */
+  private interface DirectoryStreamFactory {
+    DirectoryStream<Path> newDirectoryStream(Path dir) throws IOException;
+  }
+
   private String getTitle(Path doc) {
     Path filename = doc.getFileName();
     if (filename == null) {
@@ -934,10 +975,9 @@ public class FsRepository implements Repository {
 
   /* Populate the document ACL in the response. */
   private Map<String, Acl> getFileAcls(Path doc, Item item) throws IOException {
-    if (delegate.isDfsNamespace(doc)) {
-      throw new AssertionError("getFileAcls may not be called on DFS namespace paths.");
-    }
-    final boolean isRoot = startPaths.contains(doc) || delegate.isDfsLink(doc);
+    final boolean isRoot = startPaths.contains(doc)
+        || delegate.isDfsNamespace(doc)
+        || delegate.isDfsLink(doc);
     final boolean isDirectory = delegate.isDirectory(doc);
     AclFileAttributeViews aclViews = delegate.getAclViews(doc);
     boolean hasNoInheritedAcl = aclViews.getInheritedAclView().getAcl().isEmpty();
@@ -1032,27 +1072,12 @@ public class FsRepository implements Repository {
     return aclFragments;
   }
 
-  /* Adds namespace's DFS links as children of the namespace. */
-  private void getDfsNamespaceContent(Path doc, Item item, RepositoryDoc.Builder operationBuilder)
-      throws IOException {
-    item.setItemType(ItemType.VIRTUAL_CONTAINER_ITEM.name());
-    for (Path link : delegate.enumerateDfsLinks(doc)) {
-      final String docId;
-      try {
-        docId = delegate.newDocId(link);
-      } catch (IllegalArgumentException e) {
-        log.log(Level.WARNING, "Skipping DFS link {0} because {1}.",
-            new Object[] {link, e.getMessage()});
-        continue;
-      }
-      operationBuilder.addChildId(docId, new PushItem());
-    }
-  }
-
-  private void getDirectoryContent(
-      Path doc, FileTime lastAccessTime, Item item, RepositoryDoc.Builder operationBuilder)
-      throws IOException {
-    if (indexFolders) {
+  private void getDirectoryStreamContent(
+      Path doc, FileTime lastAccessTime, Item item, RepositoryDoc.Builder operationBuilder,
+      DirectoryStreamFactory factory) throws IOException {
+    if (delegate.isDfsNamespace(doc)) {
+      item.setItemType(ItemType.VIRTUAL_CONTAINER_ITEM.name());
+    } else if (indexFolders) {
       item.setItemType(ItemType.CONTAINER_ITEM.name());
     } else {
       item.setItemType(ItemType.VIRTUAL_CONTAINER_ITEM.name());
@@ -1061,14 +1086,14 @@ public class FsRepository implements Repository {
     // enforces a time limit on calls to getDoc. If there are more items in the directory
     // than the configured limit, stop at the limit and use a separate thread to send the
     // complete contents.
-    try (DirectoryStream<Path> files = delegate.newDirectoryStream(doc)) {
+    try (DirectoryStream<Path> paths = factory.newDirectoryStream(doc)) {
       int children = 0;
-      for (Path file : files) {
+      for (Path path : paths) {
         String docId;
         try {
-          docId = delegate.newDocId(file);
-        } catch (IllegalArgumentException e) {
-          log.log(Level.WARNING, "Skipping {0} because {1}.", new Object[] {file, e.getMessage()});
+          docId = delegate.newDocId(path);
+        } catch (IOException e) {
+          log.log(Level.WARNING, "Skipping {0} because {1}.", new Object[] {path, e.getMessage()});
           continue;
         }
         if (children++ < largeDirectoryLimit) {
@@ -1245,7 +1270,8 @@ public class FsRepository implements Repository {
    */
   private void setLastAccessTime(Path doc, FileTime lastAccessTime)
       throws IOException {
-    if (preserveLastAccessTime == PreserveLastAccessTime.NEVER) {
+    if (lastAccessTime == null
+        || preserveLastAccessTime == PreserveLastAccessTime.NEVER) {
       return;
     }
     try {

@@ -27,7 +27,6 @@ import java.nio.file.attribute.AclFileAttributeView;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileTime;
 import java.util.Iterator;
-import java.util.List;
 
 interface FileDelegate {
   /**
@@ -138,15 +137,15 @@ interface FileDelegate {
   Path resolveDfsLink(Path doc) throws IOException;
 
   /**
-   * Returns a list of DFS links contained within a DFS namespace.
+   * Returns a DirectoryStream of DFS links contained within a DFS namespace.
    * The supplied path would typically be like
    * {@code \\\\server\\namespace} or {@code \\\\domain\\namespace}.
    *
    * @param doc the DFS UNC path to a DFS namespace
-   * @return a List of DFS link paths
+   * @return a DirectoryStream of DFS link paths
    * @throws IOException if doc is not a DFS namespace or is not accessable
    */
-  List<Path> enumerateDfsLinks(Path doc) throws IOException;
+  DirectoryStream<Path> newDfsLinkStream(Path doc) throws IOException;
 
   /**
    * Returns an {@link AclFileAttributeViews} that contains the directly
