@@ -5,7 +5,7 @@
 
   <groupId>com.google.enterprise.cloudsearch</groupId>
   <artifactId>google-cloudsearch-windows-filesystems-connector</artifactId>
-  <version>v1-0.0.4</version>
+  <version>v1-0.0.5-SNAPSHOT</version>
   <packaging>jar</packaging>
 
   <name>Google Cloud Search Windows File Systems Connector</name>
@@ -185,7 +185,7 @@
     <dependency>
       <groupId>com.google.enterprise.cloudsearch</groupId>
       <artifactId>google-cloudsearch-indexing-connector-sdk</artifactId>
-      <version>v1-0.0.4</version>
+      <version>v1-0.0.5</version>
     </dependency>
     <dependency>
       <groupId>junit</groupId>
