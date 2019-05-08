@@ -249,10 +249,25 @@ public class FsRepositoryTest {
 
   // Verifies that the built-in list is loaded by default.
   @Test
-  public void testBuiltinMimeTypes() throws Exception {
+  public void getDocMimeType_builtinMimeTypes() throws IOException {
     FsRepository fsRepository = new FsRepository(mockFileDelegate);
     assertEquals("application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         fsRepository.getDocMimeType(Paths.get("file.docx")));
+    verify(mockFileDelegate, never()).probeContentType(any());
+  }
+
+  @Test
+  public void getDocMimeType_probeNull_returnsNull() throws IOException {
+    when(mockFileDelegate.probeContentType(any())).thenReturn(null);
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    assertNull(fsRepository.getDocMimeType(Paths.get("file.pdf")));
+  }
+
+  @Test
+  public void getDocMimeType_probeIoException_returnsNull() throws IOException {
+    when(mockFileDelegate.probeContentType(any())).thenThrow(IOException.class);
+    FsRepository fsRepository = new FsRepository(mockFileDelegate);
+    assertNull(fsRepository.getDocMimeType(Paths.get("file.pdf")));
   }
 
   @Test

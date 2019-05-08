@@ -1170,7 +1170,7 @@ public class FsRepository implements Repository {
   }
 
   @VisibleForTesting
-  String getDocMimeType(Path doc) throws IOException {
+  String getDocMimeType(Path doc) {
     String fileName = doc.toString();
     int pos = fileName.lastIndexOf(".");
     if (pos != -1) {
@@ -1180,7 +1180,12 @@ public class FsRepository implements Repository {
         return mimetype.trim();
       }
     }
-    return delegate.probeContentType(doc);
+    try {
+      return delegate.probeContentType(doc);
+    } catch (IOException e) {
+      log.log(Level.WARNING, "Failed to determine a MIME type for {0}", doc);
+      return null;
+    }
   }
 
   /**
