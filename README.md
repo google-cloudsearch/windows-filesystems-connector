@@ -17,7 +17,7 @@ detection. This connector implements the graph traversal strategy provided by th
 
    b. Checkout the desired version of the connector and build the ZIP file:
       ```
-      git checkout tags/v1-0.0.4
+      git checkout tags/v1-0.0.5
       mvn package
       ```
       (To skip the tests when building the connector, use `mvn package -DskipTests`)
@@ -25,7 +25,7 @@ detection. This connector implements the graph traversal strategy provided by th
 2. Run the connector
    ```
    java \
-      -jar target/google-cloudsearch-windows-filesystems-connector-v1-0.0.4.jar \
+      -jar target/google-cloudsearch-windows-filesystems-connector-v1-0.0.5.jar \
       -Dconfig=my.config
    ```
 
