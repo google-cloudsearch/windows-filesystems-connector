@@ -20,12 +20,15 @@ import static java.nio.file.attribute.AclEntryFlag.DIRECTORY_INHERIT;
 import static java.nio.file.attribute.AclEntryFlag.FILE_INHERIT;
 import static java.nio.file.attribute.AclEntryType.ALLOW;
 import static java.nio.file.attribute.AclEntryType.DENY;
+import static org.hamcrest.CoreMatchers.anyOf;
+import static org.hamcrest.CoreMatchers.equalTo;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
+import static org.junit.Assert.assertThat;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assume.assumeNotNull;
 import static org.mockito.ArgumentMatchers.any;
@@ -79,6 +82,7 @@ import java.nio.file.attribute.FileTime;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.After;
@@ -175,6 +179,7 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
     String alpha = "abcdefghijklmnopqrstuvwxyz";
     Path parent = tempRoot;
     for (int i = 0; i < 20; i++) {
+      Thread.sleep(500);
       Path child = Paths.get(parent.toString(), "" + i + "_" + alpha);
       Files.createDirectory(child);
       assertTrue(delegate.isDirectory(child));
@@ -970,17 +975,23 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
 
     WindowsFileDelegate delegate =
         new WindowsFileDelegate(null, kernel32, null, null, 0, mockAsyncApiOperationFactory);
-    delegate.startMonitorPath(tempRoot, mockEventPusher);
-    Files.write(file1, contents);
+    try {
+      delegate.startMonitorPath(tempRoot, mockEventPusher);
+      Files.write(file1, contents);
 
-    // ERROR_NOTIFY_ENUM_DIR should cause the monitor to pause. No changes should be
-    // available immediately, but after the monitor resumes future changes should be
-    // detected.
-    checkForChanges(Sets.newHashSet());
-    Thread.sleep(2500);
+      // ERROR_NOTIFY_ENUM_DIR should cause the monitor to pause. No changes should be
+      // available immediately, but after the monitor resumes future changes should be
+      // detected. On some systems, the change notification isn't dropped.
+      checkForChanges(Sets.newHashSet(), Optional.of(Collections.singleton(newRecord(file1))));
+      Thread.sleep(2500);
 
-    Files.write(file2, contents);
-    checkForChanges(Collections.singleton(newRecord(file2)));
+      Files.write(file2, contents);
+      // On some systems, we get both notifications here.
+      checkForChanges(Collections.singleton(newRecord(file2)),
+          Optional.of(Sets.newHashSet(newRecord(file1), newRecord(file2))));
+    } finally {
+      delegate.destroy();
+    }
   }
 
   // When something went wrong on the server and the operation result was an error, the
@@ -1158,21 +1169,30 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
     }
   }
 
-  // Wait a bit here; otherwise the events might not have been handed to the pusher.
   private void checkForChanges(Set<ApiOperation> expected) throws Exception {
+    checkForChanges(expected, Optional.empty());
+  }
+
+  // Wait a bit here; otherwise the events might not have been handed to the pusher.
+  // In some cases the changes differ on different versions of Windows, so allow tests to
+  // specify a second valid set of changes if needed.
+  private void checkForChanges(Set<ApiOperation> expected, Optional<Set<ApiOperation>> expected2)
+        throws Exception {
     // Collect up the changes.
     Set<AsyncApiOperation> changes = Sets.newHashSet();
     final long maxLatencyMillis = 10000;
     long latencyMillis = maxLatencyMillis;
     long batchLatencyMillis = 500;
     boolean inFollowup = false;
+    int minExpectedSize = Math.min(expected.size(),
+        expected2.isPresent() ? expected2.get().size() : expected.size());
     while (latencyMillis > 0) {
       Thread.sleep(batchLatencyMillis);
       latencyMillis -= batchLatencyMillis;
 
       changes.addAll(mockEventPusher.events);
       mockEventPusher.events.clear();
-      if (changes.size() == expected.size()) {
+      if (changes.size() == minExpectedSize) {
         // If the changes size is equal to the expected size then
         // keep listening for changes for the same period of time
         // that it took to get the current notifications to see if
@@ -1182,7 +1202,7 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
           inFollowup = true;
         }
       }
-      if (changes.size() > expected.size()) {
+      if (changes.size() > minExpectedSize) {
         // We've found more changes than are expected. Just stop
         // listening, we'll fail below.
         break;
@@ -1192,7 +1212,11 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
     Set<ApiOperation> actual = changes.stream()
         .map(AsyncApiOperation::getOperation)
         .collect(Collectors.toSet());
-    assertEquals(expected, actual);
+    if (expected2.isPresent()) {
+        assertThat(actual, anyOf(equalTo(expected), equalTo(expected2.get())));
+    } else {
+        assertEquals(expected, actual);
+    }
   }
 
   private ApiOperation newRecord(Path path) throws Exception {
