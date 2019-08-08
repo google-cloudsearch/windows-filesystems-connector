@@ -22,10 +22,38 @@ detection. This connector implements the graph traversal strategy provided by th
       ```
       (To skip the tests when building the connector, use `mvn package -DskipTests`)
 
-2. Run the connector
+
+2. Install the connector
+
+   The `mvn package` command creates a zip file containing the
+   connector and its dependencies with a name like
+   `google-cloudsearch-windows-filesystems-connector-v1-0.0.5.zip`.
+
+   a. Copy this zip file to the location where you want to install the connector.
+
+   b. Unzip the connector zip file. A directory with a name like
+      `google-cloudsearch-windows-filesystems-connector-v1-0.0.5` will be created.
+
+   c. Change into this directory. You should see the connector jar file,
+      `google-cloudsearch-windows-filesystems-connector-v1-0.0.5.jar`, as well as a `lib`
+      directory containing the connector's dependencies.
+
+
+3. Configure the connector
+
+   a. Create a file containing the connector configuration parameters. Refer to the
+   [configuration documentation](https://developers.google.com/cloud-search/docs/guides/filesystem-connector#specify-configuration)
+   for specifics and for parameter details.
+
+
+4. Run the connector
+
+   The connector should be run from the unzipped installation directory, **not** the source
+   code's `target` directory.
+
    ```
    java \
-      -jar target/google-cloudsearch-windows-filesystems-connector-v1-0.0.5.jar \
+      -jar google-cloudsearch-windows-filesystems-connector-v1-0.0.5.jar \
       -Dconfig=my.config
    ```
 
@@ -37,10 +65,6 @@ detection. This connector implements the graph traversal strategy provided by th
    [configuration documentation](https://developers.google.com/cloud-search/docs/guides/filesystem-connector#specify-configuration)
    for specifics and for parameter details.
 
-3. Install the connector
-
-   To install the connector for testing or production, copy the ZIP file from the
-   target directory to the desired machine and unzip it in the desired directory.
 
 For further information on configuration and deployment of this connector, see
 [Deploy the Microsoft Windows File Systems Connector](https://developers.google.com/cloud-search/docs/guides/filesystem-connector).
