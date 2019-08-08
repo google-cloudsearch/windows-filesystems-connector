@@ -25,13 +25,13 @@ detection. This connector implements the graph traversal strategy provided by th
 
 2. Install the connector
 
-   The `mvn package` command creates a zip file containing the
+   The `mvn package` command creates a ZIP file containing the
    connector and its dependencies with a name like
    `google-cloudsearch-windows-filesystems-connector-v1-0.0.5.zip`.
 
-   a. Copy this zip file to the location where you want to install the connector.
+   a. Copy this ZIP file to the location where you want to install the connector.
 
-   b. Unzip the connector zip file. A directory with a name like
+   b. Unzip the connector ZIP file. A directory with a name like
       `google-cloudsearch-windows-filesystems-connector-v1-0.0.5` will be created.
 
    c. Change into this directory. You should see the connector jar file,
@@ -61,9 +61,7 @@ detection. This connector implements the graph traversal strategy provided by th
    connector execution.
 
    **Note:** If the configuration file is not specified, a default file name of
-   `connector-config.properties` will be assumed. Refer to the
-   [configuration documentation](https://developers.google.com/cloud-search/docs/guides/filesystem-connector#specify-configuration)
-   for specifics and for parameter details.
+   `connector-config.properties` will be assumed.
 
 
 For further information on configuration and deployment of this connector, see
