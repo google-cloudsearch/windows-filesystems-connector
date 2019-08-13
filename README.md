@@ -5,6 +5,12 @@ Systems including SMB, DFS, and Windows File Share, with support for ACLs and in
 detection. This connector implements the graph traversal strategy provided by the
 [Content Connector SDK](https://developers.google.com/cloud-search/docs/guides/content-connector).
 
+Before running the Windows File Systems Connector, you must map the principals used in
+Windows ACLs to identities in the Google Cloud Identity service. See the
+[configuration documentation](https://developers.google.com/cloud-search/docs/guides/filesystem-connector#configure-datasource-access)
+for more information about setting up an identity source.
+
+
 ## Build instructions
 
 1. Build the connector
