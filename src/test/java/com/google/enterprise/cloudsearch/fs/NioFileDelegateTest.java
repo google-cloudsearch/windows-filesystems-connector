@@ -24,6 +24,7 @@ import com.google.common.base.Charsets;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Sets;
 import com.google.common.io.CharStreams;
+import com.google.enterprise.cloudsearch.fs.FsRepository.AllowFilter;
 import com.google.enterprise.cloudsearch.fs.FsRepository.RepositoryEventPusher;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -255,6 +256,12 @@ public class NioFileDelegateTest {
     @Override
     public void startMonitorPath(Path watchPath, RepositoryEventPusher eventPusher)
         throws IOException {
+      throw new UnsupportedOperationException();
+    }
+
+    @Override
+    public void startMonitorPath(Path watchPath, RepositoryEventPusher eventPusher,
+        AllowFilter filter) throws IOException {
       throw new UnsupportedOperationException();
     }
   }

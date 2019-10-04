@@ -17,8 +17,8 @@ package com.google.enterprise.cloudsearch.fs;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.enterprise.cloudsearch.fs.FsRepository.AllowFilter;
 import com.google.enterprise.cloudsearch.fs.FsRepository.RepositoryEventPusher;
-
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -194,6 +194,11 @@ class MockFileDelegate implements FileDelegate {
   @Override
   public void startMonitorPath(Path watchPath, RepositoryEventPusher eventPusher)
       throws IOException {
+  }
+
+  @Override
+  public void startMonitorPath(Path watchPath, RepositoryEventPusher eventPusher,
+    AllowFilter filter) throws IOException {
   }
 
   @Override
