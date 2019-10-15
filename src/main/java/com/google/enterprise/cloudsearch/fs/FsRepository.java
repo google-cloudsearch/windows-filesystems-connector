@@ -22,6 +22,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Locale.ENGLISH;
 
 import com.google.api.client.http.FileContent;
+import com.google.api.client.json.GenericJson;
 import com.google.api.client.util.DateTime;
 import com.google.api.services.cloudsearch.v1.model.Item;
 import com.google.api.services.cloudsearch.v1.model.ItemMetadata;
@@ -34,6 +35,7 @@ import com.google.common.cache.CacheBuilder;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.enterprise.cloudsearch.sdk.CheckpointCloseableIterable;
 import com.google.enterprise.cloudsearch.sdk.CheckpointCloseableIterableImpl;
 import com.google.enterprise.cloudsearch.sdk.InvalidConfigurationException;
@@ -48,7 +50,6 @@ import com.google.enterprise.cloudsearch.sdk.indexing.IndexingService.ContentFor
 import com.google.enterprise.cloudsearch.sdk.indexing.IndexingService.RequestMode;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.ApiOperation;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.ApiOperations;
-import com.google.enterprise.cloudsearch.sdk.indexing.template.AsyncApiOperation;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.PushItems;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.Repository;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.RepositoryContext;
@@ -714,12 +715,12 @@ public class FsRepository implements Repository {
 
         if (monitorForUpdates) {
           if (!delegate.isDfsNamespace(startPath)) {
-            delegate.startMonitorPath(startPath, (event) -> context.postAsyncOperation(event));
+            delegate.startMonitorPath(startPath, (event) -> context.postApiOperationAsync(event));
           } else {
             Set<Path> links = dfsNamespaceLinks.get(startPath);
             if (links != null) {
               for (Path link : links) {
-                delegate.startMonitorPath(link, (event) -> context.postAsyncOperation(event));
+                delegate.startMonitorPath(link, (event) -> context.postApiOperationAsync(event));
               }
             }
           }
@@ -874,7 +875,7 @@ public class FsRepository implements Repository {
           aclFragments.put(SHARE_ACL, shareAcls.shareAcl);
 
           if (monitorForUpdates) {
-            delegate.startMonitorPath(doc, (event) -> context.postAsyncOperation(event));
+            delegate.startMonitorPath(doc, (event) -> context.postApiOperationAsync(event));
           }
         }
 
@@ -1496,6 +1497,6 @@ public class FsRepository implements Repository {
   }
 
   static interface RepositoryEventPusher {
-    void push(AsyncApiOperation event);
+    ListenableFuture<List<GenericJson>> push(ApiOperation event);
   }
 }
