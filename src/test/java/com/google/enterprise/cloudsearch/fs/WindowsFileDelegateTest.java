@@ -129,9 +129,6 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
       } else {
         result.set(responses.get(event));
       }
-      if (!(errors.containsKey(event) || responses.containsKey(event))) {
-        System.out.println("missing response for: " + event + "; returning " + result);
-      }
       return result;
     }
   };

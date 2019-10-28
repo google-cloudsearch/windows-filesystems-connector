@@ -15,6 +15,7 @@
  */
 package com.google.enterprise.cloudsearch.fs;
 
+import com.google.api.client.googleapis.json.GoogleJsonResponseException;
 import com.google.api.client.json.GenericJson;
 import com.google.api.services.cloudsearch.v1.model.PushItem;
 import com.google.common.annotations.VisibleForTesting;
@@ -662,13 +663,28 @@ class WindowsFileDelegate extends NioFileDelegate {
 
       for (ChangeRecord change : changes) {
         log.log(Level.FINER, "Pushing change: " + change);
-        ListenableFuture<List<GenericJson>> result = eventPusher.push(change.operation);
+        ListenableFuture<List<GenericJson>> resultFuture = eventPusher.push(change.operation);
         try {
-          log.log(Level.FINER, "Result for change {0}: {1}",
-              new Object[] { change, result.get(10, TimeUnit.SECONDS) });
-        } catch (ExecutionException | TimeoutException ex) {
+          List<GenericJson> result = resultFuture.get(10, TimeUnit.SECONDS);
+          log.log(Level.FINER, "Result for change {0}: {1}", new Object[] { change, result });
+        } catch (TimeoutException ex) {
           log.log(Level.FINE, "Caught exception processing change for " + change.path
-              + ": " + ex + " " + ex.getCause());
+              + ": " + ex);
+        } catch (ExecutionException ex) {
+          if (ex.getCause() instanceof GoogleJsonResponseException) {
+            GoogleJsonResponseException cause = (GoogleJsonResponseException) ex.getCause();
+            log.log(Level.FINE, "Caught exception processing change for " + change.path
+                + ": " + cause + " " + cause.getDetails());
+          } else if (ex.getCause() != null
+              && ex.getCause().getCause() instanceof GoogleJsonResponseException) {
+            GoogleJsonResponseException cause =
+                (GoogleJsonResponseException) ex.getCause().getCause();
+            log.log(Level.FINE, "Caught exception processing change for " + change.path
+                + ": " + cause + " " + cause.getDetails());
+          } else {
+            log.log(Level.FINE, "Caught exception processing change for " + change.path
+                + ": " + ex.getCause());
+          }
         }
       }
       log.log(
