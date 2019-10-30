@@ -345,6 +345,9 @@ public class FsRepository implements Repository {
   /** Allow files/folders in DFS namespaces. */
   private boolean allowFilesInDfsNamespaces;
 
+  /** Config parameter defaultAcl.mode = OVERRIDE. */
+  private boolean isAclModeOverride;
+
   public FsRepository() {
     // We only support Windows.
     if (System.getProperty("os.name").startsWith("Windows")) {
@@ -442,8 +445,13 @@ public class FsRepository implements Repository {
         .expireAfterWrite(4, TimeUnit.HOURS) // Notice if someone hides a dir.
         .build();
 
+    log.log(Level.CONFIG, "defaultAcl.mode: {0}", context.getDefaultAclMode());
     if (context.getDefaultAclMode() == DefaultAclMode.FALLBACK) {
       log.log(Level.WARNING, "The default ACL in FALLBACK mode will be ignored.");
+    } else if (context.getDefaultAclMode() == DefaultAclMode.OVERRIDE) {
+      isAclModeOverride = true;
+      log.log(Level.WARNING,
+          "The configured default ACL will override all file share permissions.");
     }
 
     // The Administrator may bypass Share access control.
@@ -753,9 +761,13 @@ public class FsRepository implements Repository {
         case CHILD_FILE_INHERIT_ACL:
         case DFS_SHARE_ACL:
         case SHARE_ACL:
-          log.log(Level.FINEST, "Not re-indexing ACL fragment item");
-          PushItem notModified = new PushItem().setType("NOT_MODIFIED");
-          return new PushItems.Builder().addPushItem(docItem.getName(), notModified).build();
+          if (isAclModeOverride) {
+            return ApiOperations.deleteItem(docName);
+          } else {
+            log.log(Level.FINEST, "Not re-indexing ACL fragment item");
+            PushItem notModified = new PushItem().setType("NOT_MODIFIED");
+            return new PushItems.Builder().addPushItem(docItem.getName(), notModified).build();
+          }
         default:
           // fall through to rest of method
       }
@@ -867,19 +879,22 @@ public class FsRepository implements Repository {
           } catch (IOException e) {
             throw new RepositoryException.Builder().setCause(e).build();
           }
-          ShareAcls shareAcls = readShareAcls(doc);
-          if (shareAcls.dfsShareAcl != null) {
-            aclFragments.put(DFS_SHARE_ACL, shareAcls.dfsShareAcl);
+          if (!isAclModeOverride) {
+            ShareAcls shareAcls = readShareAcls(doc);
+            if (shareAcls.dfsShareAcl != null) {
+              aclFragments.put(DFS_SHARE_ACL, shareAcls.dfsShareAcl);
+            }
+            aclFragments.put(SHARE_ACL, shareAcls.shareAcl);
           }
-          aclFragments.put(SHARE_ACL, shareAcls.shareAcl);
-
           if (monitorForUpdates) {
             delegate.startMonitorPath(doc, (event) -> context.postAsyncOperation(event));
           }
         }
 
-        // Populate the document filesystem ACL.
-        aclFragments.putAll(getFileAcls(doc, item));
+        if (!isAclModeOverride) {
+          // Populate the document filesystem ACL.
+          aclFragments.putAll(getFileAcls(doc, item));
+        }
 
         // Populate the document content.
         // Some filesystems let us read the metadata and ACL, but throw
@@ -904,25 +919,27 @@ public class FsRepository implements Repository {
           throw new RepositoryException.Builder().setCause(e).build();
         }
 
-        // Set up the ACL containment. Only container types have fragments. ACL fragment
-        // items are contained in their corresponding folder items, unless the folder item
-        // is a start path or DFS link, or sets inheritAclFrom to the fragment item (root
-        // items inherit from their own share ACLs).
-        String itemInheritAclFrom = item.getAcl().getInheritAclFrom();
-        for (Map.Entry<String, Acl> fragment : aclFragments.entrySet()) {
-          Item fragmentItem = fragment.getValue()
-              .createFragmentItemOf(item.getName(), fragment.getKey());
-          if (!isRoot && !fragmentItem.getName().equals(itemInheritAclFrom)) {
-            fragmentItem.setMetadata(new ItemMetadata().setContainerName(item.getName()));
-          } else {
-            log.log(Level.FINER,
-                "Not setting container for acl fragment item: " + fragmentItem.getName());
+        if (!isAclModeOverride) {
+          // Set up the ACL containment. Only container types have fragments. ACL fragment
+          // items are contained in their corresponding folder items, unless the folder item
+          // is a start path or DFS link, or sets inheritAclFrom to the fragment item (root
+          // items inherit from their own share ACLs).
+          String itemInheritAclFrom = item.getAcl().getInheritAclFrom();
+          for (Map.Entry<String, Acl> fragment : aclFragments.entrySet()) {
+            Item fragmentItem = fragment.getValue()
+                .createFragmentItemOf(item.getName(), fragment.getKey());
+            if (!isRoot && !fragmentItem.getName().equals(itemInheritAclFrom)) {
+              fragmentItem.setMetadata(new ItemMetadata().setContainerName(item.getName()));
+            } else {
+              log.log(Level.FINER,
+                  "Not setting container for acl fragment item: " + fragmentItem.getName());
+            }
+            RepositoryDoc.Builder fragmentOperationBuilder = new RepositoryDoc.Builder();
+            fragmentOperationBuilder.setItem(fragmentItem);
+            // TODO(gemerson): should we set request mode here, or let the SDK do it?
+            fragmentOperationBuilder.setRequestMode(RequestMode.ASYNCHRONOUS);
+            operations.add(fragmentOperationBuilder.build());
           }
-          RepositoryDoc.Builder fragmentOperationBuilder = new RepositoryDoc.Builder();
-          fragmentOperationBuilder.setItem(fragmentItem);
-          // TODO(gemerson): should we set request mode here, or let the SDK do it?
-          fragmentOperationBuilder.setRequestMode(RequestMode.ASYNCHRONOUS);
-          operations.add(fragmentOperationBuilder.build());
         }
       }
     } catch (IOException e) {

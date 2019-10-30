@@ -3312,6 +3312,24 @@ public class FsRepositoryTest {
   }
 
   @Test
+  public void getDoc_defaultAclOverride_noAclContainersCreated() throws Exception {
+    MockFile child = new MockFile("subdir", true)
+        .setAclView(EMPTY_ACLVIEW);
+    MockFile root = getShareRootDefaultAclViews("/")
+        .addChildren(child);
+    MultiRootMockFileDelegate delegate = new MultiRootMockFileDelegate(root);
+
+    when(mockRepositoryContext.getDefaultAclMode()).thenReturn(DefaultAclMode.OVERRIDE);
+
+    // This class tests FsRepository. The default ACL, when configured, is set in the
+    // connector template class, so we should just have a null ACL here.
+    verifyDocAcls(delegate, new Properties(), root.getPath(), delegate.newDocId(root),
+        null, Collections.emptyMap());
+    verifyDocAcls(delegate, new Properties(), root.getPath(), delegate.newDocId(child),
+        null, Collections.emptyMap());
+  }
+
+  @Test
   public void testGetDocRemoveUserDomain() throws Exception {
     AclFileAttributeView aclView = new AclView((user("domaintoremove\\joe")
         .type(ALLOW).perms(GenericPermission.GENERIC_READ).build()));
