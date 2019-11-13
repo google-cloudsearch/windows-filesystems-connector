@@ -762,6 +762,9 @@ public class FsRepository implements Repository {
         case DFS_SHARE_ACL:
         case SHARE_ACL:
           if (isAclModeOverride) {
+            log.log(Level.FINEST,
+                "Deleting ACL fragment item because default ACL mode is OVERRIDE: "
+                + docName);
             return ApiOperations.deleteItem(docName);
           } else {
             log.log(Level.FINEST, "Not re-indexing ACL fragment item");

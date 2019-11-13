@@ -3330,6 +3330,21 @@ public class FsRepositoryTest {
   }
 
   @Test
+  public void getDoc_defaultAclOverride_aclFragmentsDeleted() throws Exception {
+    MockFile root = getShareRootDefaultAclViews("/");
+    MultiRootMockFileDelegate delegate = new MultiRootMockFileDelegate(root);
+
+    when(mockRepositoryContext.getDefaultAclMode()).thenReturn(DefaultAclMode.OVERRIDE);
+
+    setConfig("/");
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+
+    ApiOperation result = fsRepository.getDoc(new Item().setName("/file#shareAcl"));
+    assertEquals(ApiOperations.deleteItem("/file#shareAcl"), result);
+  }
+
+  @Test
   public void testGetDocRemoveUserDomain() throws Exception {
     AclFileAttributeView aclView = new AclView((user("domaintoremove\\joe")
         .type(ALLOW).perms(GenericPermission.GENERIC_READ).build()));
