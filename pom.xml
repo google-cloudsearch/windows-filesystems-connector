@@ -68,8 +68,7 @@
         <artifactId>maven-failsafe-plugin</artifactId>
         <version>2.22.0</version>
         <configuration>
-        <!--<skipITs>${skipITs}</skipITs>-->
-        <skipITs>false</skipITs>
+          <skipITs>${skipITs}</skipITs>
           <!-- Print the full stack trace. Without this, the stack printed to the console
           won't include any frames in the code under test, which makes failures harder to
           debug. -->
