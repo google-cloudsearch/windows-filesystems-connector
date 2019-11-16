@@ -16,10 +16,12 @@
 package com.google.enterprise.cloudsearch.fs;
 
 import com.google.api.client.googleapis.json.GoogleJsonResponseException;
+import com.google.api.client.json.GenericJson;
 import com.google.api.services.cloudsearch.v1.model.PushItem;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import com.google.common.util.concurrent.ListenableFuture;
 import com.google.enterprise.cloudsearch.fs.FsRepository.AllowFilter;;
 import com.google.enterprise.cloudsearch.fs.FsRepository.RepositoryEventPusher;
 import com.google.enterprise.cloudsearch.fs.WinApi.Kernel32Ex;
@@ -28,7 +30,6 @@ import com.google.enterprise.cloudsearch.fs.WinApi.PathHelper;
 import com.google.enterprise.cloudsearch.sdk.indexing.IndexingItemBuilder.ItemType;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.ApiOperation;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.ApiOperations;
-import com.google.enterprise.cloudsearch.sdk.indexing.template.AsyncApiOperation;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.PushItems;
 import com.sun.jna.Memory;
 import com.sun.jna.Pointer;
@@ -59,6 +60,7 @@ import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -74,7 +76,6 @@ class WindowsFileDelegate extends NioFileDelegate {
   private final long notificationPauseMillis;
   @VisibleForTesting final HashMap<Path, MonitorThread> monitors
       = new HashMap<Path, MonitorThread>();
-  private final AsyncApiOperationFactory asyncApiOperationFactory;
 
   public WindowsFileDelegate() {
     this(
@@ -82,8 +83,7 @@ class WindowsFileDelegate extends NioFileDelegate {
         Kernel32Ex.INSTANCE,
         Netapi32Ex.INSTANCE,
         new WindowsAclFileAttributeViews(),
-        TimeUnit.MINUTES.toMillis(NOTIFICATION_PAUSE_MILLIS),
-        AsyncApiOperation::new);
+        TimeUnit.MINUTES.toMillis(NOTIFICATION_PAUSE_MILLIS));
   }
 
   @VisibleForTesting
@@ -92,15 +92,13 @@ class WindowsFileDelegate extends NioFileDelegate {
       Kernel32Ex kernel32,
       Netapi32Ex netapi32,
       WindowsAclFileAttributeViews aclViews,
-      long notificationPauseMillis,
-      AsyncApiOperationFactory asyncApiOperationFactory
+      long notificationPauseMillis
     ) {
     this.advapi32 = advapi32;
     this.kernel32 = kernel32;
     this.netapi32 = netapi32;
     this.aclViews = aclViews;
     this.notificationPauseMillis = notificationPauseMillis;
-    this.asyncApiOperationFactory = asyncApiOperationFactory;
   }
 
   @Override
@@ -680,7 +678,7 @@ class WindowsFileDelegate extends NioFileDelegate {
       } while (info != null);
 
       for (ChangeRecord change : changes) {
-        if (change.operation.getOperation() instanceof PushItems) {
+        if (change.operation instanceof PushItems) {
           try {
             if (isDirectory(change.path)) {
               if (!allowFilter.isAllowed(newDocId(change.path), ItemType.CONTAINER_ITEM)) {
@@ -699,23 +697,27 @@ class WindowsFileDelegate extends NioFileDelegate {
         }
 
         log.log(Level.FINER, "Pushing change: " + change);
-        eventPusher.push(change.operation);
+        ListenableFuture<List<GenericJson>> resultFuture = eventPusher.push(change.operation);
         try {
-          change.operation.getResult().get();
+          List<GenericJson> result = resultFuture.get(10, TimeUnit.SECONDS);
+          log.log(Level.FINER, "Result for change {0}: {1}", new Object[] { change, result });
+        } catch (TimeoutException ex) {
+          log.log(Level.FINE, "Caught exception processing change for " + change.path
+              + ": " + ex);
         } catch (ExecutionException ex) {
           if (ex.getCause() instanceof GoogleJsonResponseException) {
-            log.log(Level.FINE, "Caught exception processing change for " + change.path);
-            log.log(Level.FINE,
-                String.valueOf(((GoogleJsonResponseException) ex.getCause()).getDetails()));
+            GoogleJsonResponseException cause = (GoogleJsonResponseException) ex.getCause();
+            log.log(Level.FINE, "Caught exception processing change for " + change.path
+                + ": " + cause + " " + cause.getDetails());
           } else if (ex.getCause() != null
               && ex.getCause().getCause() instanceof GoogleJsonResponseException) {
-            log.log(Level.FINE, "Caught exception processing change for " + change.path);
-            log.log(Level.FINE,
-                String.valueOf(
-                    ((GoogleJsonResponseException) ex.getCause().getCause()).getDetails()));
+            GoogleJsonResponseException cause =
+                (GoogleJsonResponseException) ex.getCause().getCause();
+            log.log(Level.FINE, "Caught exception processing change for " + change.path
+                + ": " + cause + " " + cause.getDetails());
           } else {
-            log.log(Level.FINE, "Caught exception processing change for " + change.path,
-                ex.getCause());
+            log.log(Level.FINE, "Caught exception processing change for " + change.path
+                + ": " + ex.getCause());
           }
         }
       }
@@ -748,14 +750,14 @@ class WindowsFileDelegate extends NioFileDelegate {
     }
   }
 
-  // Keep the AsyncApiOperation and Path together for better logging later; the
-  // AsyncApiOperation doesn't have a way to show what it's operating on.
+  // Keep the ApiOperation and Path together for better logging later; the
+  // ApiOperation doesn't have a way to show what it's operating on.
   @VisibleForTesting
   class ChangeRecord {
     private final Path path;
-    private final AsyncApiOperation operation;
+    private final ApiOperation operation;
 
-    private ChangeRecord(Path path,  AsyncApiOperation operation) {
+    private ChangeRecord(Path path, ApiOperation operation) {
       this.path = path;
       this.operation = operation;
     }
@@ -767,17 +769,17 @@ class WindowsFileDelegate extends NioFileDelegate {
       }
       ChangeRecord otherRecord = (ChangeRecord) other;
       return path.equals(otherRecord.path)
-          && operation.getOperation().equals(otherRecord.operation.getOperation());
+          && operation.equals(otherRecord.operation);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(path, operation.getOperation());
+      return Objects.hash(path, operation);
     }
 
     @Override
     public String toString() {
-      return path + ":" + operation.getOperation().getClass().getSimpleName();
+      return path + ":" + operation.getClass().getSimpleName();
     }
   }
 
@@ -787,12 +789,10 @@ class WindowsFileDelegate extends NioFileDelegate {
       String docid;
       docid = newDocId(doc);
       if (deleted) {
-        return new ChangeRecord(doc,
-            asyncApiOperationFactory.getAsyncApiOperation(ApiOperations.deleteItem(docid)));
+        return new ChangeRecord(doc, ApiOperations.deleteItem(docid));
       } else if (isRegularFile(doc) || isDirectory(doc)) {
-        return new ChangeRecord(doc,
-            asyncApiOperationFactory.getAsyncApiOperation(new PushItems.Builder()
-                .addPushItem(docid, new PushItem().setType("MODIFIED")).build()));
+        return new ChangeRecord(doc, new PushItems.Builder()
+            .addPushItem(docid, new PushItem().setType("MODIFIED")).build());
       } else {
         log.log(Level.FINEST, "Skipping {0}. It is not a regular file or directory.", doc);
       }
@@ -805,10 +805,5 @@ class WindowsFileDelegate extends NioFileDelegate {
   @Override
   public void destroy() {
     stopMonitorPaths();
-  }
-
-  @FunctionalInterface
-  interface AsyncApiOperationFactory {
-    AsyncApiOperation getAsyncApiOperation(ApiOperation operation);
   }
 }

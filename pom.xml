@@ -27,6 +27,7 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <java_version>1.8</java_version>
+    <skipITs>true</skipITs>
   </properties>
 
   <build>
@@ -61,6 +62,60 @@
             <include>**/*Test.java</include>
           </includes>
         </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <version>2.22.0</version>
+        <configuration>
+        <!--<skipITs>${skipITs}</skipITs>-->
+        <skipITs>false</skipITs>
+          <!-- Print the full stack trace. Without this, the stack printed to the console
+          won't include any frames in the code under test, which makes failures harder to
+          debug. -->
+          <trimStackTrace>false</trimStackTrace>
+          <!-- additionalClasspathDir to include jdbc driver jar file. -->
+          <additionalClasspathElements>
+              <additionalClasspathElement>${additionalClasspathDir}</additionalClasspathElement>
+          </additionalClasspathElements>
+        </configuration>
+        <executions>
+          <execution>
+            <id>integration-test</id>
+            <goals>
+              <goal>integration-test</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>verify</id>
+            <goals>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+       <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>build-helper-maven-plugin</artifactId>
+        <version>3.0.0</version>
+        <executions>
+          <execution>
+            <id>add-test-source</id>
+            <!--
+                This will help m2eclipse to recognize the folder as source
+                folder after update project configuration.
+            -->
+            <phase>process-resources</phase>
+            <goals>
+              <goal>add-test-source</goal>
+            </goals>
+            <configuration>
+              <sources>
+                <source>src/it/java</source>
+              </sources>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <!-- Create JavaDoc -->
@@ -186,6 +241,12 @@
       <groupId>com.google.enterprise.cloudsearch</groupId>
       <artifactId>google-cloudsearch-indexing-connector-sdk</artifactId>
       <version>v1-0.0.6-SNAPSHOT</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.enterprise.cloudsearch</groupId>
+      <artifactId>google-cloudsearch-connector-it-common</artifactId>
+      <version>v1-0.0.6-SNAPSHOT</version>
+      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>junit</groupId>
