@@ -693,6 +693,7 @@ class WindowsFileDelegate extends NioFileDelegate {
             }
           } catch (IOException e) {
             log.log(Level.WARNING, "Unable to test allowed state for " + change.path + ".", e);
+            // Send the change; it'll get checked again when polled.
           }
         }
 

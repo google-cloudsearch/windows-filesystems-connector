@@ -1576,10 +1576,12 @@ public class FsRepository implements Repository {
     }
   }
 
+  @FunctionalInterface
   static interface RepositoryEventPusher {
     ListenableFuture<List<GenericJson>> push(ApiOperation event);
   }
 
+  @FunctionalInterface
   static interface AllowFilter {
     boolean isAllowed(String path, ItemType itemType);
   }

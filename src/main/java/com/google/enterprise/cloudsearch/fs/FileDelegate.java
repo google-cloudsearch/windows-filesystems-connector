@@ -190,7 +190,7 @@ interface FileDelegate {
    * API via the supplied {@code operationHandler}.
    *
    * <p>Multiple file system monitors may be created by calling this method with different
-   * watchPaths. If a the supplied {@code watchPath} is already being monitored, a new monitor is
+   * watch paths. If a the supplied {@code watchPath} is already being monitored, a new monitor is
    * not created.
    *
    * @param watchPath root of a directory tree to monitor for changes
