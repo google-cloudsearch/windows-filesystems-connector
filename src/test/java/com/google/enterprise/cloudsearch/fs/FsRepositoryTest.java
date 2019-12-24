@@ -116,9 +116,7 @@ import org.junit.rules.ExpectedException;
 import org.junit.rules.TemporaryFolder;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InOrder;
 import org.mockito.Mock;
-import org.mockito.Mockito;
 import org.mockito.junit.MockitoJUnitRunner;
 
 /**
@@ -1072,27 +1070,6 @@ public class FsRepositoryTest {
   }
 
   @Test
-  public void testGetStartPaths() throws InvalidPathException, IOException {
-    String startName = "/";
-    Path startPath = setUpStartPath(startName);
-    when(mockFileDelegate.getPath("/path1")).thenReturn(Paths.get("/path1"));
-    when(mockFileDelegate.getPath("/p/path2")).thenReturn(Paths.get("/p/path2"));
-
-    setConfig(startName);
-    FsRepository fsRepository = new FsRepository(mockFileDelegate);
-    fsRepository.init(mockRepositoryContext);
-    fsRepository.getStartPaths("/", ";");
-    fsRepository.getStartPaths("/path1;/p/path2", ";");
-
-    InOrder inOrder = Mockito.inOrder(mockFileDelegate);
-    inOrder.verify(mockFileDelegate).getPath("/"); // init
-    inOrder.verify(mockFileDelegate).getPath("/");
-    inOrder.verify(mockFileDelegate).getPath("/path1");
-    inOrder.verify(mockFileDelegate).getPath("/p/path2");
-    inOrder.verifyNoMoreInteractions();
-  }
-
-  @Test
   public void testGetIds() throws IOException {
     String startName = "/";
     Path startPath = setUpStartPath(startName);
@@ -1107,7 +1084,7 @@ public class FsRepositoryTest {
         .addPushItem(startName, new PushItem().setType("MODIFIED"))
         .build());
     assertTrue(Iterables.elementsEqual(expectedList, result));
-    verify(mockFileDelegate).startMonitorPath(eq(startPath), any());
+    verify(mockFileDelegate).startMonitorPath(eq(startPath), any(), any());
   }
 
   @Test
@@ -1142,7 +1119,7 @@ public class FsRepositoryTest {
         .addPushItem(startName, new PushItem().setType("MODIFIED"))
         .build());
     assertTrue(Iterables.elementsEqual(expectedList, result));
-    verify(mockFileDelegate, never()).startMonitorPath(eq(startPath), any());
+    verify(mockFileDelegate, never()).startMonitorPath(eq(startPath), any(), any());
   }
 
   @Test
@@ -1161,7 +1138,7 @@ public class FsRepositoryTest {
         .addPushItem(startName, new PushItem().setType("MODIFIED"))
         .build());
     assertTrue(Iterables.elementsEqual(expectedList, result));
-    verify(mockFileDelegate, never()).startMonitorPath(any(), any());
+    verify(mockFileDelegate, never()).startMonitorPath(any(), any(), any());
   }
 
   @Test
@@ -1180,9 +1157,9 @@ public class FsRepositoryTest {
         .addPushItem(startName, new PushItem().setType("MODIFIED"))
         .build());
     assertTrue(Iterables.elementsEqual(expectedList, result));
-    verify(mockFileDelegate, never()).startMonitorPath(eq(startPath), any());
-    verify(mockFileDelegate, times(1)).startMonitorPath(eq(links.get(0)), any());
-    verify(mockFileDelegate, times(1)).startMonitorPath(eq(links.get(1)), any());
+    verify(mockFileDelegate, never()).startMonitorPath(eq(startPath), any(), any());
+    verify(mockFileDelegate, times(1)).startMonitorPath(eq(links.get(0)), any(), any());
+    verify(mockFileDelegate, times(1)).startMonitorPath(eq(links.get(1)), any(), any());
   }
 
   @Test
@@ -1204,10 +1181,10 @@ public class FsRepositoryTest {
         .addPushItem(startName2, new PushItem().setType("MODIFIED"))
         .build());
     assertTrue(Iterables.elementsEqual(expectedList, result));
-    verify(mockFileDelegate, never()).startMonitorPath(eq(startPath1), any());
-    verify(mockFileDelegate, times(1)).startMonitorPath(eq(links.get(0)), any());
-    verify(mockFileDelegate, times(1)).startMonitorPath(eq(links.get(1)), any());
-    verify(mockFileDelegate, times(1)).startMonitorPath(eq(startPath2), any());
+    verify(mockFileDelegate, never()).startMonitorPath(eq(startPath1), any(), any());
+    verify(mockFileDelegate, times(1)).startMonitorPath(eq(links.get(0)), any(), any());
+    verify(mockFileDelegate, times(1)).startMonitorPath(eq(links.get(1)), any(), any());
+    verify(mockFileDelegate, times(1)).startMonitorPath(eq(startPath2), any(), any());
   }
 
   @Test
@@ -1786,30 +1763,6 @@ public class FsRepositoryTest {
   }
 
   @Test
-  public void testGetDocAsRoot() throws InvalidPathException, IOException {
-    String startName = "/base";
-    Path startPath = setUpStartPath(startName);
-    when(mockFileDelegate.isRegularFile(startPath)).thenReturn(true);
-    when(mockFileDelegate.isHidden(startPath)).thenReturn(false);
-
-    setConfig(startName);
-    FsRepository fsRepository = new FsRepository(mockFileDelegate);
-    fsRepository.init(mockRepositoryContext);
-    fsRepository.getDoc(new Item().setName(startName));
-
-    InOrder inOrder = Mockito.inOrder(mockFileDelegate);
-    inOrder.verify(mockFileDelegate).getPath(startName);
-    inOrder.verify(mockFileDelegate).isDfsLink(startPath);
-    inOrder.verify(mockFileDelegate).getPath(startName);
-    inOrder.verify(mockFileDelegate).readBasicAttributes(startPath);
-    inOrder.verify(mockFileDelegate, (times(2))).isRegularFile(startPath);
-    inOrder.verify(mockFileDelegate).isHidden(startPath);
-    inOrder.verify(mockFileDelegate).isHidden(Paths.get("/"));
-    inOrder.verifyNoMoreInteractions();
-  }
-
-
-  @Test
   public void testGetDocAsNotRootFile() throws InvalidPathException, IOException {
     String startName = "/base";
     Path startPath = setUpStartPath(startName);
@@ -1824,27 +1777,6 @@ public class FsRepositoryTest {
         fsRepository.getDoc(new Item().setName(fileName)));
     assertEquals(ItemType.CONTENT_ITEM.name(), result.getItem().getItemType());
     assertEquals(ContentFormat.RAW, result.getContentFormat());
-
-    // Interactions in getDoc
-    InOrder inOrder = Mockito.inOrder(mockFileDelegate);
-    inOrder.verify(mockFileDelegate).getPath(startName);
-    inOrder.verify(mockFileDelegate).isDfsLink(filePath);
-    inOrder.verify(mockFileDelegate).newDocId(folderPath);
-    inOrder.verify(mockFileDelegate).readBasicAttributes(filePath);
-    inOrder.verify(mockFileDelegate, (times(2))).isRegularFile(filePath); // 2
-    inOrder.verify(mockFileDelegate).isHidden(filePath);
-    inOrder.verify(mockFileDelegate).isHidden(folderPath);
-    inOrder.verify(mockFileDelegate).isHidden(startPath);
-    inOrder.verify(mockFileDelegate, (times(2))).isDfsNamespace(filePath);
-    inOrder.verify(mockFileDelegate).isDfsLink(filePath);
-    inOrder.verify(mockFileDelegate).isDirectory(filePath);
-    inOrder.verify(mockFileDelegate).getAclViews(filePath);
-    inOrder.verify(mockFileDelegate).isDfsLink(filePath);
-    inOrder.verify(mockFileDelegate).isDfsLink(folderPath);
-    inOrder.verify(mockFileDelegate).newDocId(startPath);
-    inOrder.verify(mockFileDelegate).probeContentType(filePath); // mock it ?
-    inOrder.verify(mockFileDelegate).setLastAccessTime(eq(filePath), any(FileTime.class));
-    inOrder.verifyNoMoreInteractions();
   }
 
   @SuppressWarnings("unchecked")
@@ -1868,24 +1800,6 @@ public class FsRepositoryTest {
     Item item = result.getItem();
     assertEquals(ItemType.CONTAINER_ITEM.name(), item.getItemType());
     assertEquals(RequestMode.ASYNCHRONOUS, result.getRequestMode());
-
-    InOrder inOrder = Mockito.inOrder(mockFileDelegate);
-    inOrder.verify(mockFileDelegate).getPath(folderName);
-    inOrder.verify(mockFileDelegate).isDfsLink(folderPath);
-    inOrder.verify(mockFileDelegate).newDocId(startPath);
-    inOrder.verify(mockFileDelegate).readBasicAttributes(folderPath);
-    inOrder.verify(mockFileDelegate, (times(2))).isRegularFile(folderPath); // 2
-    inOrder.verify(mockFileDelegate).isHidden(folderPath);
-    inOrder.verify(mockFileDelegate).isHidden(startPath);
-    inOrder.verify(mockFileDelegate, (times(2))).isDfsNamespace(folderPath);
-    inOrder.verify(mockFileDelegate).isDfsLink(folderPath);
-    inOrder.verify(mockFileDelegate).isDirectory(folderPath);
-    inOrder.verify(mockFileDelegate).getAclViews(folderPath);
-    inOrder.verify(mockFileDelegate).isDfsLink(folderPath);
-    inOrder.verify(mockFileDelegate).newDocId(startPath);
-    inOrder.verify(mockFileDelegate).newDirectoryStream(folderPath);
-    inOrder.verify(mockFileDelegate).setLastAccessTime(eq(folderPath), any(FileTime.class));
-    inOrder.verifyNoMoreInteractions();
   }
 
   private Path setUpMockFile(String fileName, boolean isDirectory) throws IOException {
@@ -2250,6 +2164,45 @@ public class FsRepositoryTest {
 
     // All the children are pushed; the setLastAccessTime exception should be logged but
     // not cause other issues.
+    ArgumentCaptor<ApiOperation> c = ArgumentCaptor.forClass(ApiOperation.class);
+    Thread.sleep(2000); // Need to wait for the async thread to finish
+    verify(mockRepositoryContext).postApiOperationAsync(c.capture());
+    List<ApiOperation> values = c.getAllValues();
+    assertEquals(expectedItems, values.get(0));
+  }
+
+  @Test
+  public void getDoc_largeDirectory_excludeFilter() throws Exception {
+    MockFile root = getShareRootDefaultAclViews("/");
+    for (int i = 0; i < 10; i++) {
+      root.addChildren(new MockFile(String.format("child%07d", i), false));
+    }
+    MockFileDelegate delegate = new MockFileDelegate(root);
+
+    String docId = delegate.newDocId(root);
+
+    Properties config = new Properties();
+    config.put("fs.largeDirectoryLimit", "1");
+    config.put("includeExcludeFilter.test.filterType", "REGEX");
+    config.put("includeExcludeFilter.test.filterPattern", "008$");
+    config.put("includeExcludeFilter.test.action", "EXCLUDE");
+    config.put("includeExcludeFilter.test.itemType", "CONTENT_ITEM");
+    setConfig(root.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+    RepositoryDoc result =
+        getDocFromBatch(docId, fsRepository.getDoc(new Item().setName(docId)));
+
+    PushItems.Builder expectedBuilder = new PushItems.Builder();
+    for (int i = 0; i < 10; i++) {
+      if (i == 8) { // excluded by filter
+        continue;
+      }
+      expectedBuilder.addPushItem(
+          delegate.newDocId(Paths.get(String.format("/child%07d", i))), new PushItem());
+    }
+    PushItems expectedItems = expectedBuilder.build();
+
     ArgumentCaptor<ApiOperation> c = ArgumentCaptor.forClass(ApiOperation.class);
     Thread.sleep(2000); // Need to wait for the async thread to finish
     verify(mockRepositoryContext).postApiOperationAsync(c.capture());
@@ -3382,6 +3335,154 @@ public class FsRepositoryTest {
 
     verifyDocAcls(delegate, new Properties(), root.getPath(), delegate.newDocId(child),
         expectedItemAcl, Collections.emptyMap());
+  }
+
+  @Test
+  public void getDoc_includeExcludeFilter_excludedItemsDeleted() throws Exception {
+    TestHelper.assumeOsIsNotWindows();
+    MockFile root1 = getShareRootDefaultAclViews("/")
+        .addChildren(
+            new MockFile("folder1", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file1.txt", false).setAclView(EMPTY_ACLVIEW)),
+
+            new MockFile("folder2", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file2.txt", false).setAclView(EMPTY_ACLVIEW)),
+
+            new MockFile("folder3", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file3.txt", false).setAclView(EMPTY_ACLVIEW))
+          );
+    MultiRootMockFileDelegate delegate = new MultiRootMockFileDelegate(root1);
+
+    Properties config = new Properties();
+    config.put("includeExcludeFilter.rule1.action", "EXCLUDE");
+    config.put("includeExcludeFilter.rule1.filterType", "FILE_PREFIX");
+    config.put("includeExcludeFilter.rule1.filterPattern", "/folder3");
+    setConfig(root1.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+
+    for (String path : ImmutableSet.of("/", "/folder1", "/folder1/file1.txt",
+            "/folder2", "/folder2/file2.txt")) {
+      assertThat(getDocFromBatch(path, fsRepository.getDoc(new Item().setName(path))),
+          instanceOf(RepositoryDoc.class));
+    }
+    assertEquals(ApiOperations.deleteItem("/folder3"),
+        fsRepository.getDoc(new Item().setName("/folder3")));
+    assertEquals(ApiOperations.deleteItem("/folder3/file3.txt"),
+        fsRepository.getDoc(new Item().setName("/folder3/file3.txt")));
+  }
+
+  @Test
+  public void getDoc_includeExcludeFilter_excludedItemsDeletedWindows() throws Exception {
+    TestHelper.assumeOsIsWindows();
+    MockFile root1 = getShareRootDefaultAclViews("\\\\host\\share")
+        .addChildren(
+            new MockFile("folder1", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file1.txt", false).setAclView(EMPTY_ACLVIEW)),
+
+            new MockFile("folder2", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file2.txt", false).setAclView(EMPTY_ACLVIEW)),
+
+            new MockFile("folder3", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file3.txt", false).setAclView(EMPTY_ACLVIEW))
+          );
+    MultiRootMockFileDelegate delegate = new MultiRootMockFileDelegate(root1);
+
+    Properties config = new Properties();
+    config.put("includeExcludeFilter.rule1.action", "EXCLUDE");
+    config.put("includeExcludeFilter.rule1.filterType", "FILE_PREFIX");
+    config.put("includeExcludeFilter.rule1.filterPattern", "\\\\host\\share\\folder3");
+    setConfig(root1.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+
+    for (String path : ImmutableSet.of("\\\\host\\share", "\\\\host\\share\\folder1",
+            "\\\\host\\share\\folder1\\file1.txt",
+            "\\\\host\\share\\folder2", "\\\\host\\share\\folder2\\file2.txt")) {
+      assertThat(getDocFromBatch(path, fsRepository.getDoc(new Item().setName(path))),
+          instanceOf(RepositoryDoc.class));
+    }
+    assertEquals(ApiOperations.deleteItem("\\\\host\\share\\folder3"),
+        fsRepository.getDoc(new Item().setName("\\\\host\\share\\folder3")));
+    assertEquals(ApiOperations.deleteItem("\\\\host\\share\\folder3\\file3.txt"),
+        fsRepository.getDoc(new Item().setName("\\\\host\\share\\folder3\\file3.txt")));
+  }
+
+  @Test
+  public void getDoc_includeExcludeFilter_excludedChildrenNotSent() throws Exception {
+    TestHelper.assumeOsIsNotWindows();
+    MockFile root1 = getShareRootDefaultAclViews("/")
+        .addChildren(
+            new MockFile("folder1", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file1.txt", false).setAclView(EMPTY_ACLVIEW)),
+
+            new MockFile("folder2", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file2.txt", false).setAclView(EMPTY_ACLVIEW)),
+
+            new MockFile("folder3", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file3.txt", false).setAclView(EMPTY_ACLVIEW))
+          );
+    MultiRootMockFileDelegate delegate = new MultiRootMockFileDelegate(root1);
+
+    Properties config = new Properties();
+    config.put("includeExcludeFilter.rule1.action", "EXCLUDE");
+    config.put("includeExcludeFilter.rule1.filterType", "FILE_PREFIX");
+    config.put("includeExcludeFilter.rule1.filterPattern", "/folder3");
+    setConfig(root1.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+
+    RepositoryDoc doc = getDocFromBatch("/", fsRepository.getDoc(new Item().setName("/")));
+    Map<String, PushItem> expectedIds = new HashMap<>();
+    expectedIds.put("/folder1", new PushItem());
+    expectedIds.put("/folder2", new PushItem());
+    assertEquals(expectedIds, doc.getChildIds());
+  }
+
+  @Test
+  public void getDoc_includeExcludeFilter_excludedChildrenNotSentWindows() throws Exception {
+    TestHelper.assumeOsIsWindows();
+    MockFile root1 = getShareRootDefaultAclViews("\\\\host\\share")
+        .addChildren(
+            new MockFile("folder1", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file1.txt", false).setAclView(EMPTY_ACLVIEW)),
+
+            new MockFile("folder2", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file2.txt", false).setAclView(EMPTY_ACLVIEW)),
+
+            new MockFile("folder3", true).setAclView(EMPTY_ACLVIEW)
+            .addChildren(
+                new MockFile("file3.txt", false).setAclView(EMPTY_ACLVIEW))
+          );
+    MultiRootMockFileDelegate delegate = new MultiRootMockFileDelegate(root1);
+
+    Properties config = new Properties();
+    config.put("includeExcludeFilter.rule1.action", "EXCLUDE");
+    config.put("includeExcludeFilter.rule1.filterType", "FILE_PREFIX");
+    config.put("includeExcludeFilter.rule1.filterPattern", "\\\\host\\share\\folder3");
+    setConfig(root1.getPath(), config);
+    FsRepository fsRepository = new FsRepository(delegate);
+    fsRepository.init(mockRepositoryContext);
+
+    RepositoryDoc doc = getDocFromBatch("\\\\host\\share",
+        fsRepository.getDoc(new Item().setName("\\\\host\\share")));
+    Map<String, PushItem> expectedIds = new HashMap<>();
+    // MockFileDelegate/MockFile use / exclusively, so even on Windows we get
+    // forward-slash in test paths here.
+    expectedIds.put("//host/share/folder1", new PushItem());
+    expectedIds.put("//host/share/folder2", new PushItem());
+    assertEquals(expectedIds, doc.getChildIds());
   }
 
   private RepositoryDoc getDocFromBatch(String name, ApiOperation batch) {

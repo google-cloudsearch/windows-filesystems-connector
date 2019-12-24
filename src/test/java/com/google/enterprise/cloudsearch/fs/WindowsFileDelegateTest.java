@@ -1070,6 +1070,29 @@ public class WindowsFileDelegateTest extends TestWindowsAclViews {
   }
 
   @Test
+  public void monitor_excludeFile() throws Exception {
+    Path dir = newTempDir("testDir");
+    Path file = newTempFile(dir, "test.txt");
+    delegate.startMonitorPath(tempRoot, mockEventPusher,
+        (path, type) -> { return !path.endsWith(".txt"); });
+    Files.write(file, "Hello World".getBytes(UTF_8));
+    // The file should be excluded based on the filter.
+    checkForChanges(Sets.newHashSet(newRecord(dir)));
+  }
+
+  @Test
+  public void monitor_excludeDirectory() throws Exception {
+    Path dir = newTempDir("testDir");
+    Path nestedDir = Files.createDirectory(dir.resolve("nestedDir"));
+    Path file = newTempFile(nestedDir, "test.txt");
+    delegate.startMonitorPath(tempRoot, mockEventPusher,
+        (path, type) -> { return !path.contains("nestedDir"); });
+    Files.write(file, "Hello World".getBytes(UTF_8));
+    // The directory (and file) should be excluded based on the filter.
+    checkForChanges(Sets.newHashSet(newRecord(dir)));
+  }
+
+  @Test
   public void testChangeRecord() throws Exception {
     WindowsFileDelegate winDelegate = (WindowsFileDelegate) delegate;
     WindowsFileDelegate.ChangeRecord push1 = winDelegate.newChangeRecord(Paths.get("/"), false);

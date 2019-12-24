@@ -45,6 +45,7 @@ import com.google.enterprise.cloudsearch.sdk.config.Configuration;
 import com.google.enterprise.cloudsearch.sdk.indexing.Acl;
 import com.google.enterprise.cloudsearch.sdk.indexing.Acl.InheritanceType;
 import com.google.enterprise.cloudsearch.sdk.indexing.DefaultAcl.DefaultAclMode;
+import com.google.enterprise.cloudsearch.sdk.indexing.IncludeExcludeFilter;
 import com.google.enterprise.cloudsearch.sdk.indexing.IndexingItemBuilder.ItemType;
 import com.google.enterprise.cloudsearch.sdk.indexing.IndexingService.ContentFormat;
 import com.google.enterprise.cloudsearch.sdk.indexing.IndexingService.RequestMode;
@@ -109,6 +110,10 @@ import java.util.logging.Logger;
  *       DFS links
  *   <li>Uses hierarchical ACL model
  * </ul>
+ *
+ * <p>The content to be indexed can be limited using the configuration supported by the
+ * {@code IncludeExcludeFilter} class in the Cloud Search Java SDK. See the documentation
+ * for that class for details.
  *
  * <p>This repository attempts to replicate the Windows file system ACL inheritance model
  * in a manner that Google Cloud Search can apply. All ACLs, including those from a DFS
@@ -185,7 +190,10 @@ import java.util.logging.Logger;
  *
  * <p>Note: If the DFS system employs Access-based Enumeration, make sure the traversal user has
  * sufficient permissions to see all the links that require indexing.
+ *
+ * @see com.google.enterprise.cloudsearch.sdk.indexing.IncludeExcludeFilter
  */
+// TODO(gemerson): Add a link to the filter class when the doc is published.
 public class FsRepository implements Repository {
   private static final Logger log  = Logger.getLogger(FsRepository.class.getName());
 
@@ -346,6 +354,9 @@ public class FsRepository implements Repository {
   /** Allow files/folders in DFS namespaces. */
   private boolean allowFilesInDfsNamespaces;
 
+  /** Support include/exclude configuration properties. */
+  private IncludeExcludeFilter includeExcludeFilter;
+
   /** Config parameter defaultAcl.mode = OVERRIDE. */
   private boolean isAclModeOverride;
 
@@ -403,6 +414,9 @@ public class FsRepository implements Repository {
     } catch (IOException e) {
       throw new InvalidConfigurationException("Exception during resolving start paths", e);
     }
+
+    includeExcludeFilter = IncludeExcludeFilter.fromConfiguration();
+    log.log(Level.CONFIG, "includeExcludeFilter: {0}", includeExcludeFilter);
 
     builtinPrefix = Configuration.getString(CONFIG_BUILTIN_PREFIX, "BUILTIN\\").get();
     log.log(Level.CONFIG, "builtinPrefix: {0}", builtinPrefix);
@@ -723,12 +737,14 @@ public class FsRepository implements Repository {
 
         if (monitorForUpdates) {
           if (!delegate.isDfsNamespace(startPath)) {
-            delegate.startMonitorPath(startPath, (event) -> context.postApiOperationAsync(event));
+            delegate.startMonitorPath(startPath, context::postApiOperationAsync,
+                includeExcludeFilter::isAllowed);
           } else {
             Set<Path> links = dfsNamespaceLinks.get(startPath);
             if (links != null) {
               for (Path link : links) {
-                delegate.startMonitorPath(link, (event) -> context.postApiOperationAsync(event));
+                delegate.startMonitorPath(link, context::postApiOperationAsync,
+                    includeExcludeFilter::isAllowed);
               }
             }
           }
@@ -803,6 +819,15 @@ public class FsRepository implements Repository {
     } catch (FileNotFoundException | NoSuchFileException e) {
       log.log(Level.INFO, "Not found: {0}", doc);
       return ApiOperations.deleteItem(docName);
+    } catch (IOException e) {
+      throw new RepositoryException.Builder().setCause(e).setErrorMessage(docName).build();
+    }
+
+    try {
+      if (!includeExcludeFilter.isAllowed(docName, getItemType(doc))) {
+        log.log(Level.FINE, "Deleting item {0} based on IncludeExcludeFilter rule", docName);
+        return ApiOperations.deleteItem(docName);
+      }
     } catch (IOException e) {
       throw new RepositoryException.Builder().setCause(e).setErrorMessage(docName).build();
     }
@@ -891,7 +916,8 @@ public class FsRepository implements Repository {
             aclFragments.put(SHARE_ACL, shareAcls.shareAcl);
           }
           if (monitorForUpdates) {
-            delegate.startMonitorPath(doc, (event) -> context.postApiOperationAsync(event));
+            delegate.startMonitorPath(doc, context::postApiOperationAsync,
+                includeExcludeFilter::isAllowed);
           }
         }
 
@@ -956,6 +982,19 @@ public class FsRepository implements Repository {
     log.exiting("FsConnector", "getDoc");
     operations.add(operationBuilder.build());
     return ApiOperations.batch(operations.iterator());
+  }
+
+  private ItemType getItemType(Path p) throws IOException {
+    if (delegate.isRegularFile(p)) {
+      return ItemType.CONTENT_ITEM;
+    }
+    if (delegate.isDfsNamespace(p)) {
+      return ItemType.VIRTUAL_CONTAINER_ITEM;
+    } else if (indexFolders) {
+      return ItemType.CONTAINER_ITEM;
+    } else {
+      return ItemType.VIRTUAL_CONTAINER_ITEM;
+    }
   }
 
   /**
@@ -1117,6 +1156,17 @@ public class FsRepository implements Repository {
           log.log(Level.WARNING, "Skipping {0} because {1}.", new Object[] {path, e.getMessage()});
           continue;
         }
+
+        try {
+          if (!includeExcludeFilter.isAllowed(docId, getItemType(path))) {
+            log.log(Level.FINE, "Skipping child {0} based on IncludeExcludeFilter", docId);
+            continue;
+          }
+        } catch (IOException e) {
+          log.log(Level.FINE, "Error checking IncludeExcludeFilter for child " + docId, e);
+          // Send the child; it'll get checked again when polled.
+        }
+
         if (children++ < largeDirectoryLimit) {
           operationBuilder.addChildId(docId, new PushItem());
         } else {
@@ -1148,14 +1198,24 @@ public class FsRepository implements Repository {
         int count = 0;
         PushItems.Builder builder = new PushItems.Builder();
         for (Path path : paths) {
-          String docid;
+          String docId;
           try {
-            docid = delegate.newDocId(path);
+            docId = delegate.newDocId(path);
           } catch (IOException e) {
             log.log(Level.WARNING, "Not pushing " + path, e);
             continue;
           }
-          builder.addPushItem(docid, new PushItem());
+          try {
+            if (!includeExcludeFilter.isAllowed(docId, getItemType(path))) {
+              log.log(Level.FINE, "Skipping child {0} based on IncludeExcludeFilter", docId);
+              continue;
+            }
+          } catch (IOException e) {
+            log.log(Level.FINE, "Error checking IncludeExcludeFilter for child " + docId, e);
+            // Send the child; it'll get checked again when polled.
+          }
+
+          builder.addPushItem(docId, new PushItem());
           count++;
           if (count % ASYNC_PUSH_ITEMS_BATCH_SIZE == 0) {
             context.postApiOperationAsync(builder.build());
@@ -1184,7 +1244,7 @@ public class FsRepository implements Repository {
       RepositoryDoc.Builder operationBuilder) throws IOException {
     String mimeType = getDocMimeType(doc);
     item.getMetadata().setMimeType(mimeType);
-    item.setItemType(ItemType.CONTENT_ITEM.name());
+    item.setItemType(getItemType(doc).name());
 
     operationBuilder.setContent(new FileContent(mimeType, doc.toFile()), ContentFormat.RAW);
     setLastAccessTime(doc, lastAccessTime);
@@ -1516,7 +1576,13 @@ public class FsRepository implements Repository {
     }
   }
 
+  @FunctionalInterface
   static interface RepositoryEventPusher {
     ListenableFuture<List<GenericJson>> push(ApiOperation event);
+  }
+
+  @FunctionalInterface
+  static interface AllowFilter {
+    boolean isAllowed(String path, ItemType itemType);
   }
 }

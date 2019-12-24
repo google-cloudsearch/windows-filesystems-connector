@@ -22,10 +22,12 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.enterprise.cloudsearch.fs.FsRepository.AllowFilter;;
 import com.google.enterprise.cloudsearch.fs.FsRepository.RepositoryEventPusher;
 import com.google.enterprise.cloudsearch.fs.WinApi.Kernel32Ex;
 import com.google.enterprise.cloudsearch.fs.WinApi.Netapi32Ex;
 import com.google.enterprise.cloudsearch.fs.WinApi.PathHelper;
+import com.google.enterprise.cloudsearch.sdk.indexing.IndexingItemBuilder.ItemType;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.ApiOperation;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.ApiOperations;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.PushItems;
@@ -362,6 +364,12 @@ class WindowsFileDelegate extends NioFileDelegate {
   @Override
   public void startMonitorPath(Path watchPath, RepositoryEventPusher eventPusher)
       throws IOException {
+    startMonitorPath(watchPath, eventPusher, (a, b) -> true);
+  }
+
+  @Override
+  public void startMonitorPath(Path watchPath, RepositoryEventPusher eventPusher,
+    AllowFilter allowFilter) throws IOException {
 
     if (!Files.isDirectory(watchPath, LinkOption.NOFOLLOW_LINKS)) {
       throw new IOException(
@@ -377,7 +385,7 @@ class WindowsFileDelegate extends NioFileDelegate {
         return;
       }
       startSignal = new CountDownLatch(1);
-      monitorThread = new MonitorThread(watchPath, eventPusher, startSignal);
+      monitorThread = new MonitorThread(watchPath, eventPusher, startSignal, allowFilter);
       monitorThread.setName("Monitor " + watchPath);
       monitorThread.start();
       monitors.put(watchPath, monitorThread);
@@ -427,6 +435,7 @@ class WindowsFileDelegate extends NioFileDelegate {
   private class MonitorThread extends Thread {
     private final Path watchPath;
     private final RepositoryEventPusher eventPusher;
+    private final AllowFilter allowFilter;
     private final CountDownLatch startSignal;
     private final HANDLE stopEvent;
     private final ExponentialBackOff backOff;
@@ -435,14 +444,21 @@ class WindowsFileDelegate extends NioFileDelegate {
     private boolean paused = false;
     private long pauseExpires;
 
-    public MonitorThread(
-        Path watchPath, RepositoryEventPusher eventPusher, CountDownLatch startSignal) {
+    public MonitorThread(Path watchPath, RepositoryEventPusher eventPusher,
+        CountDownLatch startSignal) {
+      this(watchPath, eventPusher, startSignal, (a, b) -> true);
+    }
+
+    public MonitorThread(Path watchPath, RepositoryEventPusher eventPusher,
+        CountDownLatch startSignal, AllowFilter allowFilter) {
       Preconditions.checkNotNull(watchPath, "the watchPath may not be null");
       Preconditions.checkNotNull(eventPusher, "the repository event pusher may not be null");
       Preconditions.checkNotNull(startSignal, "the start signal may not be null");
+      Preconditions.checkNotNull(allowFilter, "the allow filter may not be null");
       this.watchPath = watchPath;
       this.eventPusher = eventPusher;
       this.startSignal = startSignal;
+      this.allowFilter = allowFilter;
       stopEvent = kernel32.CreateEvent(null, false, false, null);
       backOff = new ExponentialBackOff();
     }
@@ -662,6 +678,25 @@ class WindowsFileDelegate extends NioFileDelegate {
       } while (info != null);
 
       for (ChangeRecord change : changes) {
+        if (change.operation instanceof PushItems) {
+          try {
+            if (isDirectory(change.path)) {
+              if (!allowFilter.isAllowed(newDocId(change.path), ItemType.CONTAINER_ITEM)) {
+                log.log(Level.FINE, "Not pushing change for " + change.path + " based on filter.");
+                continue;
+              }
+            } else if (isRegularFile(change.path)) {
+              if (!allowFilter.isAllowed(newDocId(change.path), ItemType.CONTENT_ITEM)) {
+                log.log(Level.FINE, "Not pushing change for " + change.path + " based on filter.");
+                continue;
+              }
+            }
+          } catch (IOException e) {
+            log.log(Level.WARNING, "Unable to test allowed state for " + change.path + ".", e);
+            // Send the change; it'll get checked again when polled.
+          }
+        }
+
         log.log(Level.FINER, "Pushing change: " + change);
         ListenableFuture<List<GenericJson>> resultFuture = eventPusher.push(change.operation);
         try {

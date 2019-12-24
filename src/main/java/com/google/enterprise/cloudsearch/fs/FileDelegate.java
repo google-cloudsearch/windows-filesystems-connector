@@ -16,6 +16,7 @@
 package com.google.enterprise.cloudsearch.fs;
 
 import com.google.common.base.Preconditions;
+import com.google.enterprise.cloudsearch.fs.FsRepository.AllowFilter;
 import com.google.enterprise.cloudsearch.fs.FsRepository.RepositoryEventPusher;
 import com.google.enterprise.cloudsearch.sdk.indexing.template.AsyncApiOperation;
 import java.io.IOException;
@@ -189,7 +190,7 @@ interface FileDelegate {
    * API via the supplied {@code operationHandler}.
    *
    * <p>Multiple file system monitors may be created by calling this method with different
-   * watchPaths. If a the supplied {@code watchPath} is already being monitored, a new monitor is
+   * watch paths. If a the supplied {@code watchPath} is already being monitored, a new monitor is
    * not created.
    *
    * @param watchPath root of a directory tree to monitor for changes
@@ -197,6 +198,24 @@ interface FileDelegate {
    * @throws IOException
    */
   void startMonitorPath(Path watchPath, RepositoryEventPusher eventPusher) throws IOException;
+
+  /**
+   * Start monitoring the file system identified by {@code watchPath} for changes. Changes include
+   * creating, deleting, modifying, renaming, or moving files or folders, as well as changes to
+   * certain metadata and ACLs. The ID of each file or folder experiencing changes is pushed to the
+   * API via the supplied {@code operationHandler}.
+   *
+   * <p>Multiple file system monitors may be created by calling this method with different
+   * watchPaths. If a the supplied {@code watchPath} is already being monitored, a new monitor is
+   * not created.
+   *
+   * @param watchPath root of a directory tree to monitor for changes
+   * @param eventPusher the {@link RepositoryEventPusher} to push {@link AsyncApiOperation} changes
+   * @param filter a filter to determine whether a change should be sent
+   * @throws IOException
+   */
+  void startMonitorPath(Path watchPath, RepositoryEventPusher eventPusher, AllowFilter filter)
+      throws IOException;
 
   /**
    * Shut down the {@code FileDelegate}, releasing its resources, and
