@@ -36,21 +36,34 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
+import com.google.enterprise.cloudsearch.sdk.config.Configuration.ResetConfigRule;
+import com.google.enterprise.cloudsearch.sdk.config.Configuration.SetupConfigRule;
 import com.google.enterprise.cloudsearch.sdk.indexing.Acl;
+import com.google.enterprise.cloudsearch.sdk.indexing.Acl.ResetExternalGroupsRule;
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.PrintWriter;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.AclEntry;
 import java.nio.file.attribute.AclFileAttributeView;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
+import org.junit.rules.TemporaryFolder;
 
 /** Test cases for {@link AclBuilder}. */
 public class AclBuilderTest {
+  @Rule public ResetConfigRule resetConfig = new ResetConfigRule();
+  @Rule public SetupConfigRule setupConfig = SetupConfigRule.uninitialized();
+  @Rule public ResetExternalGroupsRule resetExternalGroups = new ResetExternalGroupsRule();
   @Rule public ExpectedException thrown = ExpectedException.none();
+  @Rule public TemporaryFolder temporaryFolder = new TemporaryFolder();
 
   private final Path doc = Paths.get("foo", "bar");
   private final Set<String> windowsAccounts =
@@ -325,6 +338,34 @@ public class AclBuilderTest {
     assertEquals(expected, result);
   }
 
+  @Test
+  public void getAcl_externalGroups_mapped() throws Exception {
+    File groupsFile = temporaryFolder.newFile();
+    // Group members aren't used when mapping external groups to identity sources.
+    createFile(groupsFile, "{\"externalGroups\":["
+        + " {\"name\":\"Everyone\", \"members\":[ {\"id\":\"everyoneGroup@example.com\"} ]}"
+        + " ]}");
+    Properties config = new Properties();
+    config.setProperty("externalgroups.filename", groupsFile.toString());
+    config.setProperty("externalgroups.identitySourceId", "1234567890");
+    // api.identitySourceId is the default identity source for ACL principals but should
+    // not be used for groups in the external groups file
+    config.setProperty("api.identitySourceId", "abcdefg");
+    setupConfig.initConfig(config);
+
+    AclFileAttributeView aclView = new AclView(
+        group("Everyone").type(ALLOW).perms(GENERIC_READ)
+        .flags(FILE_INHERIT, DIRECTORY_INHERIT));
+    AclBuilder aclBuilder =
+        new AclBuilder(doc, aclView, windowsAccounts, builtinPrefix, "");
+    Acl result = aclBuilder.getAcl().build();
+    // Identity source id in the generated ACL uses the configured external groups
+    // identity source.
+    Acl expected = emptyExpectedBuilder()
+        .setReaders(groups("identitysources/1234567890/groups/Everyone")).build();
+    assertEquals(expected, result);
+  }
+
   /** Returns an AclBuilder for the AclFileAttributeView. */
   private AclBuilder newBuilder(AclFileAttributeView aclView) {
     return new AclBuilder(doc, aclView, windowsAccounts, builtinPrefix, "testdomain");
@@ -359,5 +400,20 @@ public class AclBuilderTest {
       principals.add(Acl.getUserPrincipal(user));
     }
     return principals;
+  }
+
+  /** Returns a Set of GroupPrincipals of the named users. */
+  private Set<Principal> groups(String... groups) {
+    Set<Principal> principals = Sets.newHashSet();
+    for (String group : groups) {
+      principals.add(new Principal().setGroupResourceName(group));
+    }
+    return principals;
+  }
+
+  private void createFile(File file, String content) throws IOException {
+    try (PrintWriter pw = new PrintWriter(new FileWriter(file))) {
+      pw.write(content);
+    }
   }
 }
