@@ -341,7 +341,8 @@ public class AclBuilderTest {
   @Test
   public void getAcl_externalGroups_mapped() throws Exception {
     File groupsFile = temporaryFolder.newFile();
-    // Group members aren't used when mapping external groups to identity sources.
+    // Group members aren't used in this context. The connector only maps external groups
+    // to their identity sources for use in ACLs.
     createFile(groupsFile, "{\"externalGroups\":["
         + " {\"name\":\"Everyone\", \"members\":[ {\"id\":\"everyoneGroup@example.com\"} ]}"
         + " ]}");
