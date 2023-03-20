@@ -22,7 +22,7 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.enterprise.cloudsearch.fs.FsRepository.AllowFilter;;
+import com.google.enterprise.cloudsearch.fs.FsRepository.AllowFilter;
 import com.google.enterprise.cloudsearch.fs.FsRepository.RepositoryEventPusher;
 import com.google.enterprise.cloudsearch.fs.WinApi.Kernel32Ex;
 import com.google.enterprise.cloudsearch.fs.WinApi.Netapi32Ex;
